@@ -16,7 +16,7 @@ MIDAS (Money Intelligence, Debt, Allocation & Spending) es un centro de control 
 ## Stack
 
 - Next.js 16 + React 19 + TypeScript
-- Supabase Auth + PostgreSQL
+- Supabase Auth + Data API + PostgreSQL
 - Drizzle ORM
 - Tailwind CSS + componentes shadcn
 - Vercel
@@ -28,7 +28,6 @@ MIDAS (Money Intelligence, Debt, Allocation & Spending) es un centro de control 
 
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-   - `SUPABASE_DB_URL` o `POSTGRES_URL`
 
 3. Instala y ejecuta:
 
@@ -45,7 +44,7 @@ La migración inicial está en:
 
 `supabase/migrations/20260830174317_initial_midas_shared_terran.sql`
 
-Incluye nueve tablas `midas_*`, claves foráneas, índices, restricciones, permisos mínimos y RLS. Cada tabla expuesta queda protegida por `auth.uid()`; la autorización ADMIN usa `midas_private.is_admin()` con `search_path` fijado. La migración no contiene operaciones globales sobre `public`, por lo que no modifica tablas, políticas ni permisos de TERRAN.
+Incluye nueve tablas `midas_*`, claves foráneas, índices, restricciones, permisos mínimos y RLS. Cada tabla expuesta queda protegida por `auth.uid()`; la autorización ADMIN usa `midas_private.is_admin()` con `search_path` fijado. Las rutas del servidor usan la Data API con la sesión del usuario y no requieren una contraseña de PostgreSQL. Las migraciones no contienen operaciones globales sobre `public`, por lo que no modifican tablas, políticas ni permisos de TERRAN.
 
 ## Google Sheets
 
