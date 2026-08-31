@@ -57,3 +57,11 @@ test("keeps program and category editing controls", async () => {
   assert.match(source, /type="color"/);
   assert.match(source, /Cerrar sesión/);
 });
+
+test("detects spreadsheet tabs automatically and renders a dropdown", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /action: "list_sheets"/);
+  assert.match(source, /Detectando pestañas automáticamente/);
+  assert.match(source, /Pestaña que MIDAS debe leer/);
+  assert.doesNotMatch(source, />Detectar pestañas</);
+});
