@@ -5,6 +5,7 @@ import {
 import { mapCategory, mapSource, mapSyncLog } from "../../../lib/midas-data";
 import {
   ColumnMapping, fetchSpreadsheet, normalizeAmount, normalizeDate, rowObject, suggestMapping,
+  fetchSpreadsheetSheets, withSpreadsheetSheet,
 } from "../../../lib/spreadsheet";
 
 function id(prefix: string) {
@@ -42,12 +43,20 @@ export async function POST(request: Request) {
     const feature = await findRow(tables, APPWRITE_TABLES.settings, [Query.equal("setting_key", "spreadsheet_enabled")]);
     if (feature?.value === "false") return Response.json({ error: "La integración Spreadsheet está desactivada por ADMIN." }, { status: 503 });
 
+    if (action === "list_sheets") {
+      const rawUrl = String(payload.url ?? "");
+      const sheets = await fetchSpreadsheetSheets(rawUrl);
+      return Response.json({ sheets });
+    }
+
     if (action === "preview") {
       const rawUrl = String(payload.url ?? "");
-      const result = await fetchSpreadsheet(rawUrl);
+      const sheetName = String(payload.sheetName ?? "").trim();
+      const selectedUrl = withSpreadsheetSheet(rawUrl, sheetName);
+      const result = await fetchSpreadsheet(selectedUrl);
       const headers = result.rows[0].map(header => header.trim());
       return Response.json({
-        sourceName: sourceLabel(rawUrl), headers,
+        sourceName: `${sourceLabel(rawUrl)} · ${sheetName}`, sheetName, headers,
         preview: result.rows.slice(1, 6).map(row => rowObject(headers, row)),
         suggestedMapping: suggestMapping(headers),
       });
@@ -55,9 +64,11 @@ export async function POST(request: Request) {
 
     if (action === "save_source") {
       const rawUrl = String(payload.url ?? "");
+      const sheetName = String(payload.sheetName ?? "").trim();
       const mapping = payload.mapping as Partial<ColumnMapping>;
       if (!requiredMapping(mapping)) return Response.json({ error: "Mapea ID, fecha, descripción y monto." }, { status: 400 });
-      const result = await fetchSpreadsheet(rawUrl);
+      const selectedUrl = withSpreadsheetSheet(rawUrl, sheetName);
+      const result = await fetchSpreadsheet(selectedUrl);
       const headers = result.rows[0].map(header => header.trim());
       const missing = Object.values(mapping).filter(Boolean).filter(column => !headers.includes(String(column)));
       if (missing.length) return Response.json({ error: "La estructura cambió. Revisa el mapeo de columnas." }, { status: 400 });
@@ -65,7 +76,7 @@ export async function POST(request: Request) {
       const name = String(payload.sourceName ?? sourceLabel(rawUrl)).trim() || sourceLabel(rawUrl);
       const now = new Date().toISOString();
       const sourceData = {
-        user_id: user.id, source_name: name, source_url: rawUrl, column_mapping: JSON.stringify(mapping),
+        user_id: user.id, source_name: name, source_url: selectedUrl, column_mapping: JSON.stringify(mapping),
         last_sync_status: "configured", updated_at: now,
       };
       const saved = existing
@@ -76,7 +87,7 @@ export async function POST(request: Request) {
       await createRow(tables, APPWRITE_TABLES.activity, newLogId(), {
         user_id: user.id, target_user_id: user.id,
         action: existing ? "spreadsheet_source_changed" : "spreadsheet_configured",
-        status: "success", metadata: JSON.stringify({ sourceName: name }),
+        status: "success", metadata: JSON.stringify({ sourceName: name, sheetName }),
       });
       return Response.json({ source: mapSource(saved) });
     }
