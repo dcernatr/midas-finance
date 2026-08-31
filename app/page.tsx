@@ -120,7 +120,7 @@ export default function Home() {
   const [newCategory, setNewCategory] = useState({ name: "", groupName: "Necesidades", budget: "", color: "#CBA65B", kind: "variable" });
   const [newDebt, setNewDebt] = useState({ name: "", entity: "", originalAmount: "", currentBalance: "", annualRate: "", minimumPayment: "", plannedPayment: "", dueDay: "1", acquiredAt: today });
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [sheetStep, setSheetStep] = useState<"status" | "url" | "sheet" | "mapping" | "result">("url");
+  const [sheetStep, setSheetStep] = useState<"status" | "url" | "mapping" | "result">("url");
   const [sheetUrl, setSheetUrl] = useState("");
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [sheetName, setSheetName] = useState("");
@@ -155,6 +155,39 @@ export default function Home() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+  useEffect(() => {
+    const rawUrl = sheetUrl.trim();
+    if (!sheetOpen || sheetStep !== "url" || !/^https:\/\/docs\.google\.com\/spreadsheets\/d\//i.test(rawUrl)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setSheetLoading(true);
+      setError("");
+      try {
+        const response = await fetch("/api/spreadsheet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "list_sheets", url: rawUrl }),
+          signal: controller.signal,
+        });
+        if (redirectIfUnauthorized(response)) return;
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "No se pudieron detectar las pestañas.");
+        const names = Array.isArray(result.sheets) ? result.sheets.map(String) : [];
+        if (!names.length) throw new Error("El Spreadsheet no tiene pestañas visibles.");
+        setSheetNames(names);
+        setSheetName(names[0]);
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setError(cause instanceof Error ? cause.message : "No se pudieron detectar las pestañas.");
+      } finally {
+        if (!controller.signal.aborted) setSheetLoading(false);
+      }
+    }, 650);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [sheetOpen, sheetStep, sheetUrl]);
 
   async function mutate(payload: Record<string, unknown>, success?: string) {
     setSaving(true);
@@ -384,30 +417,6 @@ export default function Home() {
       setSheetPreview(null);
       setSheetMapping({});
       setSheetStep("url");
-    }
-  }
-
-  async function listSpreadsheetSheets() {
-    setSheetLoading(true);
-    setError("");
-    try {
-      const response = await fetch("/api/spreadsheet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "list_sheets", url: sheetUrl }),
-      });
-      if (redirectIfUnauthorized(response)) return;
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "No se pudieron detectar las pestañas.");
-      const names = Array.isArray(result.sheets) ? result.sheets.map(String) : [];
-      if (!names.length) throw new Error("El Spreadsheet no tiene pestañas visibles.");
-      setSheetNames(names);
-      setSheetName(names[0]);
-      setSheetStep("sheet");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudieron detectar las pestañas.");
-    } finally {
-      setSheetLoading(false);
     }
   }
 
@@ -655,7 +664,7 @@ export default function Home() {
 
       <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
         <DialogContent className="midas-dialog spreadsheet-dialog">
-          <DialogHeader><p className="eyebrow">FUENTE EXTERNA · APPEND ONLY</p><DialogTitle>{sheetStep === "sheet" ? "Seleccionar pestaña" : sheetStep === "mapping" ? "Mapear columnas" : sheetStep === "result" ? "Sincronización completada" : data.spreadsheetSource && sheetStep === "status" ? "Spreadsheet conectado" : "Obtener datos de Spreadsheet"}</DialogTitle><DialogDescription>Sin Google API, OAuth ni credenciales. La hoja solo alimenta Gastos Efectivos.</DialogDescription></DialogHeader>
+          <DialogHeader><p className="eyebrow">FUENTE EXTERNA · APPEND ONLY</p><DialogTitle>{sheetStep === "mapping" ? "Mapear columnas" : sheetStep === "result" ? "Sincronización completada" : data.spreadsheetSource && sheetStep === "status" ? "Spreadsheet conectado" : "Obtener datos de Spreadsheet"}</DialogTitle><DialogDescription>Sin Google API, OAuth ni credenciales. La hoja solo alimenta Gastos Efectivos.</DialogDescription></DialogHeader>
 
           {sheetStep === "status" && data.spreadsheetSource && <div className="sheet-status">
             <div className="sheet-source-card"><div className="integration-icon"><Database /></div><div><span>Fuente actual</span><strong>{data.spreadsheetSource.sourceName}</strong><p>Última sincronización: {data.spreadsheetSource.lastSyncAt ? formatDateTime(data.spreadsheetSource.lastSyncAt) : "pendiente"}</p></div><span className={"status-pill " + (data.spreadsheetSource.lastSyncStatus === "success" ? "success" : data.spreadsheetSource.lastSyncStatus === "partial" ? "warning" : "neutral")}><span />{data.spreadsheetSource.lastSyncStatus}</span></div>
@@ -666,22 +675,21 @@ export default function Home() {
           {sheetStep === "url" && <div className="sheet-url-step">
             <div className="sheet-instruction"><Link2 /><div><strong>Pega un enlace de Google Sheets o Drive</strong><p>Admite enlaces /edit, drivesdk, publicados y exportables. El acceso general debe ser “Cualquier persona con el enlace · Lector”.</p></div></div>
             {changingSource && <div className="change-warning"><AlertCircle /><p><strong>Cambiar la fuente no eliminará los gastos importados.</strong> Las próximas sincronizaciones usarán el nuevo Spreadsheet.</p></div>}
-            <DialogField label="Link del Google Spreadsheet" wide><input value={sheetUrl} onChange={event => setSheetUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…" /></DialogField>
+            <DialogField label="Link del Google Spreadsheet" wide><input value={sheetUrl} onChange={event => { setSheetUrl(event.target.value); setSheetNames([]); setSheetName(""); setSheetLoading(false); setError(""); }} placeholder="https://docs.google.com/spreadsheets/d/…" /></DialogField>
+            {sheetLoading && <div className="sheet-detection-status"><RefreshCw className="spin" /><span>Detectando pestañas automáticamente…</span></div>}
+            {!sheetLoading && sheetNames.length > 0 && <div className="sheet-tab-picker">
+              <div className="preview-chip"><Check /> {sheetNames.length} {sheetNames.length === 1 ? "pestaña detectada" : "pestañas detectadas"}</div>
+              <DialogField label="Pestaña que MIDAS debe leer" wide><Select value={sheetName} onValueChange={setSheetName}><SelectTrigger className="sheet-tab-select"><SelectValue placeholder="Selecciona una pestaña" /></SelectTrigger><SelectContent>{sheetNames.map(name => <SelectItem value={name} key={name}>{name}</SelectItem>)}</SelectContent></Select></DialogField>
+            </div>}
             <div className="privacy-note"><ShieldCheck /><span>MIDAS no solicita ni almacena usuario, contraseña, API Key, OAuth o tokens de Google.</span></div>
-            <Button className="gold-button" disabled={!sheetUrl.trim() || sheetLoading} onClick={listSpreadsheetSheets}>{sheetLoading ? "Buscando pestañas…" : "Detectar pestañas"}</Button>
-          </div>}
-
-          {sheetStep === "sheet" && <div className="sheet-url-step">
-            <div className="sheet-instruction"><Database /><div><strong>Elige la pestaña que MIDAS debe leer</strong><p>Detectamos {sheetNames.length} {sheetNames.length === 1 ? "pestaña visible" : "pestañas visibles"}. Esta selección se conservará para cada sincronización.</p></div></div>
-            <DialogField label="Pestaña del Spreadsheet" wide><Select value={sheetName} onValueChange={setSheetName}><SelectTrigger className="sheet-tab-select"><SelectValue placeholder="Selecciona una pestaña" /></SelectTrigger><SelectContent>{sheetNames.map(name => <SelectItem value={name} key={name}>{name}</SelectItem>)}</SelectContent></Select></DialogField>
-            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("url")}>Volver</Button><Button className="gold-button" disabled={!sheetName || sheetLoading} onClick={previewSpreadsheet}>{sheetLoading ? "Cargando vista previa…" : "Usar esta pestaña"}</Button></div>
+            <Button className="gold-button" disabled={!sheetName || sheetLoading} onClick={previewSpreadsheet}>{sheetLoading ? "Cargando vista previa…" : "Usar pestaña seleccionada"}</Button>
           </div>}
 
           {sheetStep === "mapping" && sheetPreview && <div className="mapping-step">
             <div className="preview-chip"><Check /> Pestaña “{sheetPreview.sheetName}” accesible · {sheetPreview.headers.length} columnas detectadas</div>
             <div className="mapping-grid">{SHEET_FIELDS.map(([key, label, required]) => <div className="mapping-row" key={key}><div><strong>{label}</strong>{required && <span>Obligatorio</span>}</div><ChevronRight /><Select value={sheetMapping[key] || "__none"} onValueChange={value => setSheetMapping({ ...sheetMapping, [key]: value === "__none" ? undefined : value })}><SelectTrigger className="mapping-select"><SelectValue placeholder="Sin asignar" /></SelectTrigger><SelectContent><SelectItem value="__none">Sin asignar</SelectItem>{sheetPreview.headers.map(header => <SelectItem value={header} key={header}>{header}</SelectItem>)}</SelectContent></Select></div>)}</div>
             <div className="sheet-preview-table"><span>VISTA PREVIA</span><div><Table><TableHeader><TableRow>{sheetPreview.headers.slice(0, 5).map(header => <TableHead key={header}>{header}</TableHead>)}</TableRow></TableHeader><TableBody>{sheetPreview.preview.slice(0, 3).map((row, index) => <TableRow key={index}>{sheetPreview.headers.slice(0, 5).map(header => <TableCell key={header}>{row[header] || "—"}</TableCell>)}</TableRow>)}</TableBody></Table></div></div>
-            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("sheet")}>Cambiar pestaña</Button><Button className="gold-button" disabled={sheetLoading || !sheetMapping.source_id || !sheetMapping.date || !sheetMapping.description || !sheetMapping.amount} onClick={saveSpreadsheetSource}>{sheetLoading ? "Guardando…" : "Guardar conexión"}</Button></div>
+            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("url")}>Cambiar pestaña</Button><Button className="gold-button" disabled={sheetLoading || !sheetMapping.source_id || !sheetMapping.date || !sheetMapping.description || !sheetMapping.amount} onClick={saveSpreadsheetSource}>{sheetLoading ? "Guardando…" : "Guardar conexión"}</Button></div>
           </div>}
 
           {sheetStep === "result" && syncResult && <div className="sync-result">
