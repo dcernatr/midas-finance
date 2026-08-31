@@ -1,6 +1,10 @@
-import { dataOrThrow, mapUser } from "./midas-data";
+import { ID, Query } from "node-appwrite";
+import {
+  APPWRITE_TABLES, createAdminServices, createRow, createSessionAccount, findRow,
+  listRows, updateRow,
+} from "./appwrite/server";
+import { mapUser } from "./midas-data";
 import type { MidasUser } from "./midas-data";
-import { createClient } from "./supabase/server";
 
 export type { MidasUser } from "./midas-data";
 
@@ -11,51 +15,67 @@ export class AuthError extends Error {
 }
 
 function makeId(prefix: string) {
-  return `${prefix}_${crypto.randomUUID()}`;
+  return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 35 - prefix.length)}`;
 }
 
 export async function ensureContext(options: { logAccess?: boolean } = {}) {
-  const supabase = await createClient();
-  const identityResult = await supabase.auth.getUser();
-  const identity = identityResult.data.user;
-  if (identityResult.error || !identity?.email) throw new AuthError("Debes iniciar sesión para usar MIDAS.", 401);
+  const sessionAccount = await createSessionAccount();
+  if (!sessionAccount) throw new AuthError("Debes iniciar sesión para usar MIDAS.", 401);
 
-  const userResult = await supabase.from("midas_users").select("*").eq("id", identity.id).maybeSingle();
-  if (userResult.error) throw new Error(userResult.error.message);
-  let user = userResult.data ? mapUser(userResult.data) : null;
+  let identity;
+  try {
+    identity = await sessionAccount.get();
+  } catch {
+    throw new AuthError("Tu sesión venció. Ingresa nuevamente.", 401);
+  }
+
+  const { tables } = createAdminServices();
+  let row = await findRow(tables, APPWRITE_TABLES.users, [Query.equal("auth_user_id", identity.$id)]);
   const now = new Date().toISOString();
 
-  if (!user) {
-    const registered = dataOrThrow(await supabase.rpc("midas_register_current_user", {
-      p_display_name: typeof identity.user_metadata?.display_name === "string" ? identity.user_metadata.display_name : null,
-    }));
-    const row = Array.isArray(registered) ? registered[0] : registered;
-    if (!row) throw new AuthError("No se pudo preparar el usuario.", 500);
-    user = mapUser(row as Record<string, unknown>);
-  } else {
-    const lastAccess = Date.parse(user.lastLoginAt);
-    const shouldLog = options.logAccess && (!Number.isFinite(lastAccess) || Date.now() - lastAccess > 30 * 60 * 1000);
-    if (shouldLog) {
-      dataOrThrow(await supabase.from("midas_users").update({
-        last_login_at: now,
-        display_name: typeof identity.user_metadata?.display_name === "string" ? identity.user_metadata.display_name : user.displayName,
-      }).eq("id", identity.id));
-      dataOrThrow(await supabase.from("midas_activity_logs").insert({
-        id: makeId("act"), user_id: identity.id, target_user_id: identity.id,
-        action: "login", status: "success", metadata: "{}",
-      }));
-      user = { ...user, lastLoginAt: now };
-    }
+  if (!row) {
+    const firstUser = (await listRows(tables, APPWRITE_TABLES.users, [], 1)).length === 0;
+    row = await createRow(tables, APPWRITE_TABLES.users, identity.$id, {
+      auth_user_id: identity.$id,
+      email: identity.email.toLowerCase(),
+      display_name: identity.name || identity.email.split("@")[0],
+      role: firstUser ? "admin" : "user",
+      status: "active",
+      last_login_at: now,
+    });
+    await createRow(tables, APPWRITE_TABLES.activity, makeId("act"), {
+      user_id: identity.$id,
+      target_user_id: identity.$id,
+      action: "user_created",
+      status: "success",
+      metadata: JSON.stringify({ role: firstUser ? "admin" : "user" }),
+    });
+  }
+
+  let user = mapUser(row);
+  const lastAccess = Date.parse(user.lastLoginAt);
+  if (options.logAccess && (!Number.isFinite(lastAccess) || Date.now() - lastAccess > 30 * 60 * 1000)) {
+    await updateRow(tables, APPWRITE_TABLES.users, row.$id, {
+      last_login_at: now,
+      display_name: identity.name || user.displayName || identity.email.split("@")[0],
+    });
+    await createRow(tables, APPWRITE_TABLES.activity, ID.unique(), {
+      user_id: identity.$id,
+      target_user_id: identity.$id,
+      action: "login",
+      status: "success",
+      metadata: "{}",
+    });
+    user = { ...user, lastLoginAt: now };
   }
 
   if (user.status === "disabled") throw new AuthError("Tu acceso a MIDAS está desactivado. Contacta al administrador.", 403);
   if (user.role !== "admin") {
-    const settingResult = await supabase.from("midas_system_settings").select("value").eq("key", "maintenance_mode").maybeSingle();
-    if (settingResult.error) throw new Error(settingResult.error.message);
-    if (settingResult.data?.value === "true") throw new AuthError("MIDAS se encuentra temporalmente en mantenimiento.", 503);
+    const maintenance = await findRow(tables, APPWRITE_TABLES.settings, [Query.equal("setting_key", "maintenance_mode")]);
+    if (maintenance?.value === "true") throw new AuthError("MIDAS se encuentra temporalmente en mantenimiento.", 503);
   }
 
-  return { user: user as MidasUser, supabase };
+  return { user: user as MidasUser, tables, identity };
 }
 
 export async function ensureUser(options: { logAccess?: boolean } = {}) {

@@ -1,43 +1,50 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { TablesDB } from "node-appwrite";
 import { authErrorResponse, newLogId, requireAdmin } from "../../../lib/auth";
-import { dataOrThrow, mapActivity, mapSetting, mapSource, mapSyncLog, mapUser } from "../../../lib/midas-data";
+import {
+  APPWRITE_TABLES, Query, createRow, findRow, listRows, updateRow, upsertRow,
+} from "../../../lib/appwrite/server";
+import { mapActivity, mapSetting, mapSource, mapSyncLog, mapUser } from "../../../lib/midas-data";
 
 const DEFAULT_SETTINGS = [
   { key: "maintenance_mode", value: "false" },
   { key: "spreadsheet_enabled", value: "true" },
 ] as const;
 
-async function ensureSettings(supabase: SupabaseClient, adminId: string) {
+async function ensureSettings(tables: TablesDB, adminId: string) {
   for (const setting of DEFAULT_SETTINGS) {
-    const existing = await supabase.from("midas_system_settings").select("key").eq("key", setting.key).maybeSingle();
-    if (existing.error) throw new Error(existing.error.message);
-    if (!existing.data) dataOrThrow(await supabase.from("midas_system_settings").insert({ ...setting, updated_by: adminId }));
+    const existing = await findRow(tables, APPWRITE_TABLES.settings, [Query.equal("setting_key", setting.key)]);
+    if (!existing) {
+      await createRow(tables, APPWRITE_TABLES.settings, setting.key, {
+        setting_key: setting.key, value: setting.value, updated_by: adminId, updated_at: new Date().toISOString(),
+      });
+    }
   }
 }
 
-async function readAdminState(supabase: SupabaseClient, adminId: string) {
-  await ensureSettings(supabase, adminId);
-  const [usersResult, sourcesResult, syncsResult, logsResult, settingsResult] = await Promise.all([
-    supabase.from("midas_users").select("*").order("created_at", { ascending: false }),
-    supabase.from("midas_spreadsheet_sources").select("*").order("updated_at", { ascending: false }),
-    supabase.from("midas_spreadsheet_sync_logs").select("*").order("created_at", { ascending: false }).limit(50),
-    supabase.from("midas_activity_logs").select("*").order("created_at", { ascending: false }).limit(100),
-    supabase.from("midas_system_settings").select("*"),
+async function readAdminState(tables: TablesDB, adminId: string) {
+  await ensureSettings(tables, adminId);
+  const [users, sources, syncs, logs, settings] = await Promise.all([
+    listRows(tables, APPWRITE_TABLES.users, [Query.orderDesc("$createdAt")]),
+    listRows(tables, APPWRITE_TABLES.sources, [Query.orderDesc("$updatedAt")]),
+    listRows(tables, APPWRITE_TABLES.syncLogs, [Query.orderDesc("$createdAt")], 50),
+    listRows(tables, APPWRITE_TABLES.activity, [Query.orderDesc("$createdAt")], 100),
+    listRows(tables, APPWRITE_TABLES.settings),
   ]);
-  const userRows = dataOrThrow(usersResult).map(mapUser);
-  const sourceRows = dataOrThrow(sourcesResult).map(mapSource);
-  const syncRows = dataOrThrow(syncsResult).map(mapSyncLog);
-  const logRows = dataOrThrow(logsResult).map(mapActivity);
-  const settingRows = dataOrThrow(settingsResult).map(mapSetting);
-  const activeUsers = userRows.filter(user => user.status === "active").length;
+  const userRows = users.map(mapUser);
+  const sourceRows = sources.map(mapSource);
+  const syncRows = syncs.map(mapSyncLog);
+  const logRows = logs.map(mapActivity);
+  const settingRows = settings.map(mapSetting);
   const recentThreshold = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const newUsers = userRows.filter(user => Date.parse(user.createdAt) >= recentThreshold).length;
-  const failedSyncs = syncRows.filter(log => log.status === "failed" || log.status === "partial").length;
   const userById = new Map(userRows.map(user => [user.id, user.email]));
   return {
     overview: {
-      totalUsers: userRows.length, activeUsers, newUsers, integrations: sourceRows.length,
-      synchronizations: syncRows.length, recentErrors: failedSyncs,
+      totalUsers: userRows.length,
+      activeUsers: userRows.filter(user => user.status === "active").length,
+      newUsers: userRows.filter(user => Date.parse(user.createdAt) >= recentThreshold).length,
+      integrations: sourceRows.length,
+      synchronizations: syncRows.length,
+      recentErrors: syncRows.filter(log => log.status === "failed" || log.status === "partial").length,
       systemStatus: settingRows.find(setting => setting.key === "maintenance_mode")?.value === "true" ? "maintenance" : "operational",
     },
     users: userRows,
@@ -57,8 +64,8 @@ async function readAdminState(supabase: SupabaseClient, adminId: string) {
 
 export async function GET() {
   try {
-    const { user, supabase } = await requireAdmin();
-    return Response.json(await readAdminState(supabase, user.id));
+    const { user, tables } = await requireAdmin();
+    return Response.json(await readAdminState(tables, user.id));
   } catch (error) {
     return authErrorResponse(error);
   }
@@ -66,16 +73,15 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const { user: admin, supabase } = await requireAdmin();
+    const { user: admin, tables } = await requireAdmin();
     const payload = await request.json() as Record<string, unknown>;
     const action = String(payload.action ?? "");
 
     if (action === "set_role" || action === "set_status") {
-      const targetEmail = String(payload.email ?? "").toLowerCase();
-      const targetResult = await supabase.from("midas_users").select("*").eq("email", targetEmail).maybeSingle();
-      if (targetResult.error) throw new Error(targetResult.error.message);
-      if (!targetResult.data) return Response.json({ error: "El usuario no existe." }, { status: 404 });
-      const target = mapUser(targetResult.data);
+      const targetEmail = String(payload.email ?? "").trim().toLowerCase();
+      const targetRow = await findRow(tables, APPWRITE_TABLES.users, [Query.equal("email", targetEmail)]);
+      if (!targetRow) return Response.json({ error: "El usuario no existe." }, { status: 404 });
+      const target = mapUser(targetRow);
       const nextRole = action === "set_role" ? String(payload.role ?? "") : target.role;
       const nextStatus = action === "set_status" ? String(payload.status ?? "") : target.status;
       if (!["admin", "user"].includes(nextRole) || !["active", "disabled"].includes(nextStatus)) {
@@ -85,32 +91,34 @@ export async function POST(request: Request) {
         return Response.json({ error: "No puedes retirar o desactivar tu propio acceso ADMIN." }, { status: 400 });
       }
       if (target.role === "admin" && (nextRole !== "admin" || nextStatus !== "active")) {
-        const adminsResult = dataOrThrow(await supabase.from("midas_users").select("role,status"));
-        const activeAdmins = adminsResult.filter(row => row.role === "admin" && row.status === "active").length;
-        if (activeAdmins <= 1) return Response.json({ error: "MIDAS debe conservar al menos un administrador activo." }, { status: 400 });
+        const users = (await listRows(tables, APPWRITE_TABLES.users)).map(mapUser);
+        if (users.filter(user => user.role === "admin" && user.status === "active").length <= 1) {
+          return Response.json({ error: "MIDAS debe conservar al menos un administrador activo." }, { status: 400 });
+        }
       }
-      dataOrThrow(await supabase.from("midas_users").update({ role: nextRole, status: nextStatus }).eq("email", targetEmail));
-      dataOrThrow(await supabase.from("midas_activity_logs").insert({
-        id: newLogId(), user_id: admin.id, target_user_id: target.id,
+      await updateRow(tables, APPWRITE_TABLES.users, target.id, { role: nextRole, status: nextStatus });
+      await createRow(tables, APPWRITE_TABLES.activity, newLogId(), {
+        user_id: admin.id, target_user_id: target.id,
         action: action === "set_role" ? "user_role_changed" : nextStatus === "active" ? "user_activated" : "user_disabled",
         status: "success",
-        metadata: JSON.stringify({ previousRole: target.role, role: nextRole, previousStatus: target.status, userStatus: nextStatus, at: new Date().toISOString() }),
-      }));
+        metadata: JSON.stringify({ previousRole: target.role, role: nextRole, previousStatus: target.status, userStatus: nextStatus }),
+      });
     } else if (action === "set_setting") {
       const key = String(payload.key ?? "");
       const value = String(payload.value ?? "");
       if (!["maintenance_mode", "spreadsheet_enabled"].includes(key) || !["true", "false"].includes(value)) {
         return Response.json({ error: "Configuración no permitida." }, { status: 400 });
       }
-      dataOrThrow(await supabase.from("midas_system_settings").upsert({ key, value, updated_by: admin.id, updated_at: new Date().toISOString() }));
-      dataOrThrow(await supabase.from("midas_activity_logs").insert({
-        id: newLogId(), user_id: admin.id, target_user_id: null,
-        action: "system_setting_changed", status: "success", metadata: JSON.stringify({ key, value }),
-      }));
+      await upsertRow(tables, APPWRITE_TABLES.settings, key, {
+        setting_key: key, value, updated_by: admin.id, updated_at: new Date().toISOString(),
+      });
+      await createRow(tables, APPWRITE_TABLES.activity, newLogId(), {
+        user_id: admin.id, action: "system_setting_changed", status: "success", metadata: JSON.stringify({ key, value }),
+      });
     } else {
       return Response.json({ error: "Acción no reconocida." }, { status: 400 });
     }
-    return Response.json(await readAdminState(supabase, admin.id));
+    return Response.json(await readAdminState(tables, admin.id));
   } catch (error) {
     return authErrorResponse(error);
   }

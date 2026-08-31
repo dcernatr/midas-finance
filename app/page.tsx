@@ -76,6 +76,12 @@ function expenseStatus(percent: number) {
   return { label: "Óptimo", tone: "success" };
 }
 
+function redirectIfUnauthorized(response: Response) {
+  if (response.status !== 401) return false;
+  window.location.assign("/login");
+  return true;
+}
+
 function projectDebt(debt: Debt, extra = 0) {
   const payment = Math.max(debt.plannedPayment || debt.minimumPayment, 0) + extra;
   const rate = debt.annualRate / 1200;
@@ -128,6 +134,7 @@ export default function Home() {
     setError("");
     try {
       const response = await fetch("/api/state?month=" + monthKey);
+      if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "No se pudo cargar MIDAS.");
       setData(result);
@@ -156,6 +163,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...payload, monthKey }),
       });
+      if (redirectIfUnauthorized(response)) return false;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "No se pudo guardar.");
       setData(result);
@@ -384,6 +392,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "preview", url: sheetUrl }),
       });
+      if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "No se pudo validar la hoja.");
       setSheetPreview(result);
@@ -406,6 +415,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "save_source", url: sheetUrl, sourceName: sheetPreview.sourceName, mapping: sheetMapping }),
       });
+      if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "No se pudo guardar la fuente.");
       await load();
@@ -428,6 +438,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "sync" }),
       });
+      if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "No se pudo sincronizar.");
       setSyncResult(result);

@@ -1,10 +1,3 @@
-type QueryResult<T> = { data: T; error: { message: string } | null };
-
-export function dataOrThrow<T>(result: QueryResult<T>): NonNullable<T> {
-  if (result.error) throw new Error(result.error.message);
-  return result.data as NonNullable<T>;
-}
-
 export type MidasUser = {
   id: string;
   email: string;
@@ -122,7 +115,8 @@ export type SystemSettingRow = {
 };
 
 type DbRow = Record<string, unknown>;
-const text = (row: DbRow, key: string) => String(row[key] ?? "");
+const value = (row: DbRow, key: string) => row[key] ?? (key === "id" ? row.$id : key === "created_at" ? row.$createdAt : key === "updated_at" ? row.$updatedAt : undefined);
+const text = (row: DbRow, key: string) => String(value(row, key) ?? "");
 const nullableText = (row: DbRow, key: string) => row[key] == null ? null : String(row[key]);
 const number = (row: DbRow, key: string) => Number(row[key] ?? 0);
 
@@ -159,5 +153,5 @@ export function mapActivity(row: DbRow): ActivityLogRow {
 }
 
 export function mapSetting(row: DbRow): SystemSettingRow {
-  return { key: text(row, "key"), value: text(row, "value"), updatedBy: text(row, "updated_by"), updatedAt: text(row, "updated_at") };
+  return { key: text(row, "setting_key"), value: text(row, "value"), updatedBy: text(row, "updated_by"), updatedAt: text(row, "updated_at") };
 }

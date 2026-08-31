@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { LockKeyhole, Mail, ShieldCheck } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -15,13 +14,14 @@ export default function LoginPage() {
     event.preventDefault();
     setLoading(true);
     setMessage("");
-    const supabase = createClient();
-    const result = mode === "signin"
-      ? await supabase.auth.signInWithPassword({ email, password })
-      : await supabase.auth.signUp({ email, password, options: { data: { display_name: email.split("@")[0] } } });
+    const response = await fetch("/api/auth/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password, mode }),
+    });
+    const result = await response.json() as { error?: string };
     setLoading(false);
-    if (result.error) return setMessage(result.error.message);
-    if (mode === "signup" && !result.data.session) return setMessage("Revisa tu correo para confirmar la cuenta antes de ingresar.");
+    if (!response.ok) return setMessage(result.error ?? "No se pudo completar el acceso.");
     const returnTo = new URLSearchParams(window.location.search).get("returnTo");
     window.location.href = returnTo?.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
   }
@@ -43,7 +43,7 @@ export default function LoginPage() {
           {message && <p className="login-message">{message}</p>}
           <button className="gold-button login-submit" disabled={loading}>{loading ? "Procesando…" : mode === "signin" ? "Ingresar" : "Crear cuenta"}</button>
         </form>
-        <div className="login-security"><ShieldCheck /><span>Autenticación segura con Supabase. MIDAS nunca almacena tu contraseña.</span></div>
+        <div className="login-security"><ShieldCheck /><span>Autenticación segura con Appwrite. MIDAS nunca almacena tu contraseña.</span></div>
       </section>
     </main>
   );

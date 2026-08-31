@@ -36,6 +36,12 @@ const actions: Record<string, string> = {
   system_setting_changed: "Configuración modificada",
 };
 
+function redirectIfUnauthorized(response: Response) {
+  if (response.status !== 401) return false;
+  window.location.assign("/login");
+  return true;
+}
+
 export default function AdminClient() {
   const [data, setData] = useState<AdminState | null>(null);
   const [tab, setTab] = useState("overview");
@@ -47,6 +53,7 @@ export default function AdminClient() {
   async function load() {
     try {
       const response = await fetch("/api/admin");
+      if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "No se pudo cargar ADMIN.");
       setData(result);
@@ -69,6 +76,7 @@ export default function AdminClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "No se pudo guardar.");
       setData(result);
@@ -118,7 +126,7 @@ export default function AdminClient() {
           </section>
           <section className="panel system-status-card">
             <div className={"system-orb " + data.overview.systemStatus}><span /></div>
-            <div><p className="eyebrow">SYSTEM STATUS</p><h2>{data.overview.systemStatus === "operational" ? "MIDAS opera con normalidad" : "Modo mantenimiento activo"}</h2><p>Versión Beta v0.3.0 · Supabase, Spreadsheet y autorización verificables.</p></div>
+            <div><p className="eyebrow">SYSTEM STATUS</p><h2>{data.overview.systemStatus === "operational" ? "MIDAS opera con normalidad" : "Modo mantenimiento activo"}</h2><p>Versión Beta v0.4.0 · Appwrite, Spreadsheet y autorización verificables.</p></div>
           </section>
         </TabsContent>
 
@@ -151,7 +159,7 @@ export default function AdminClient() {
             <SettingCard title="Integración Spreadsheet" description="Permite que los usuarios configuren y sincronicen hojas publicadas." checked={data.settings.spreadsheet_enabled !== "false"} disabled={saving === "spreadsheet_enabled"} onChange={checked => mutate({ action: "set_setting", key: "spreadsheet_enabled", value: String(checked) }, "spreadsheet_enabled")} />
             <SettingCard title="Modo mantenimiento" description="Bloquea temporalmente las operaciones de usuarios normales; ADMIN permanece disponible." checked={data.settings.maintenance_mode === "true"} disabled={saving === "maintenance_mode"} warning onChange={checked => mutate({ action: "set_setting", key: "maintenance_mode", value: String(checked) }, "maintenance_mode")} />
           </section>
-          <section className="panel about-admin"><p className="eyebrow">APPLICATION</p><h2>MIDAS Beta — v0.3.0</h2><p>Money Intelligence, Debt, Allocation & Spending</p></section>
+          <section className="panel about-admin"><p className="eyebrow">APPLICATION</p><h2>MIDAS Beta — v0.4.0</h2><p>Money Intelligence, Debt, Allocation & Spending</p></section>
         </TabsContent>
       </Tabs>
     </main>

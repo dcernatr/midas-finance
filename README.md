@@ -1,6 +1,6 @@
 # MIDAS Finance
 
-MIDAS (Money Intelligence, Debt, Allocation & Spending) es un centro de control financiero personal construido con Next.js, Supabase y PostgreSQL.
+MIDAS (Money Intelligence, Debt, Allocation & Spending) es un centro de control financiero personal construido con Next.js y Appwrite Cloud.
 
 ## Funciones principales
 
@@ -10,41 +10,48 @@ MIDAS (Money Intelligence, Debt, Allocation & Spending) es un centro de control 
 - Importación append-only con detección por `ID_MOVIMIENTO`, vista previa y mapeo de columnas.
 - Gestión y proyección de deudas.
 - HELP buscable y ADMIN protegido por rol.
-- Aislamiento de datos por usuario y políticas RLS.
-- Convivencia segura con TERRAN mediante tablas exclusivas con prefijo `midas_*`.
+- Aislamiento de datos por usuario desde el servidor y tablas privadas.
+- Infraestructura propia, sin compartir base de datos con TERRAN ni PomoBoxing.
 
 ## Stack
 
 - Next.js 16 + React 19 + TypeScript
-- Supabase Auth + Data API + PostgreSQL
-- Drizzle ORM
+- Appwrite Auth + TablesDB
 - Tailwind CSS + componentes shadcn
-- Vercel
+- Appwrite Sites
 
 ## Desarrollo local
 
-1. Copia `.env.example` a `.env.local`.
-2. Completa:
+1. Crea un proyecto exclusivo para MIDAS en Appwrite Cloud y elige la region **New York (`nyc`)** para reducir la latencia desde Peru frente a Europa.
+2. Copia `.env.example` a `.env.local` y completa:
 
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+   - `NEXT_PUBLIC_APPWRITE_ENDPOINT`
+   - `NEXT_PUBLIC_APPWRITE_PROJECT_ID`
+   - `APPWRITE_API_KEY`
+   - `APPWRITE_DATABASE_ID=midas`
 
-3. Instala y ejecuta:
+3. Crea una API key de servidor con estos scopes:
+
+   - `sessions.write`
+   - `databases.read`, `databases.write`
+   - `tables.read`, `tables.write`
+   - `columns.read`, `columns.write`
+   - `indexes.read`, `indexes.write`
+   - `rows.read`, `rows.write`
+
+4. Instala, prepara Appwrite y ejecuta:
 
    ```bash
    npm install
+   npm run appwrite:setup
    npm run dev
    ```
 
-4. Abre `http://localhost:3000`.
+5. Abre `http://localhost:3000`.
 
 ## Base de datos
 
-La migración inicial está en:
-
-`supabase/migrations/20260830174317_initial_midas_shared_terran.sql`
-
-Incluye nueve tablas `midas_*`, claves foráneas, índices, restricciones, permisos mínimos y RLS. Cada tabla expuesta queda protegida por `auth.uid()`; la autorización ADMIN usa `midas_private.is_admin()` con `search_path` fijado. Las rutas del servidor usan la Data API con la sesión del usuario y no requieren una contraseña de PostgreSQL. Las migraciones no contienen operaciones globales sobre `public`, por lo que no modifican tablas, políticas ni permisos de TERRAN.
+`scripts/setup-appwrite.mjs` crea una base independiente y nueve tablas privadas `midas_*`. El navegador no recibe la API key ni accede directamente a las tablas. Las rutas Next.js validan la sesión y fuerzan el `user_id` en cada operación. El primer usuario registrado recibe el rol ADMIN.
 
 ## Google Sheets
 
@@ -67,9 +74,16 @@ npm run dev
 npm run lint
 npm run build
 npm test
-npm run db:generate
+npm run appwrite:setup
 ```
 
-## Despliegue en Vercel
+## Despliegue en Appwrite Sites
 
-Conecta el repositorio a Vercel, vincula el proyecto Supabase e incorpora las variables indicadas en `.env.example`. El Build Command es `npm run build`.
+En Appwrite, abre **Sites → Create site → Connect Git repository**, selecciona este repositorio y usa:
+
+- Framework: Next.js
+- Install Command: `npm install`
+- Build Command: `npm run build`
+- Output: `.next`
+
+Agrega las cuatro variables de `.env.example`. Appwrite Sites soporta Next.js SSR directamente.
