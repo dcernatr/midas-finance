@@ -34,7 +34,7 @@ type SpreadsheetSource = { id: string; sourceName: string; sourceUrl: string; co
 type CurrentUser = { email: string; displayName: string | null; role: string; status: string };
 type FinanceState = { month: Month; categories: Category[]; transactions: Transaction[]; debts: Debt[]; spreadsheetSource: SpreadsheetSource | null; currentUser: CurrentUser };
 type SheetMapping = { source_id?: string; date?: string; description?: string; category?: string; subcategory?: string; amount?: string; payment_method?: string; account?: string; notes?: string };
-type SheetPreview = { sourceName: string; headers: string[]; preview: Array<Record<string, string>>; suggestedMapping: SheetMapping };
+type SheetPreview = { sourceName: string; sheetName: string; headers: string[]; preview: Array<Record<string, string>>; suggestedMapping: SheetMapping };
 type SyncResult = { detected: number; inserted: number; ignored: number; failed: number; errors: Array<{ row: number; reason: string }>; status: string; completedAt: string };
 type CategoryMetric = Category & { actual: number; available: number; percent: number; status: { label: string; tone: string } };
 type Metrics = {
@@ -54,7 +54,7 @@ const HELP_SECTIONS = [
   { id: "start", title: "Primeros pasos", summary: "Qué es MIDAS y cómo preparar tu primer mes.", items: ["Define tu ingreso esperado y objetivo de ahorro.", "Asigna presupuestos a las categorías.", "Registra gastos manualmente o conecta un Spreadsheet.", "Revisa Dashboard, MIDAS Score y Advisor para corregir el rumbo."] },
   { id: "plan", title: "Gastos programados", summary: "Categorías, colores, presupuestos y comparación.", items: ["Cada categoría tiene un monto programado y un color identificador.", "Usa el lápiz para editar nombre, grupo, tipo, color y monto programado.", "Los cambios rápidos de presupuesto se guardan al salir del campo.", "Plan vs. Real utiliza los Gastos Efectivos del mismo mes.", "Las categorías con historial se archivan para preservar trazabilidad."] },
   { id: "ledger", title: "Gastos efectivos", summary: "Registro real consolidado y origen de movimientos.", items: ["El botón + Gasto permite registrar monto, categoría y guardar rápidamente.", "Los movimientos manuales y Spreadsheet conviven en la misma tabla.", "Eliminar un pago de deuda restaura también el saldo de la deuda.", "Los filtros y la exportación trabajan sobre los movimientos visibles."] },
-  { id: "spreadsheet", title: "Cómo conectar un Spreadsheet", summary: "Preparación, enlace, mapeo, sincronización y errores.", items: ["Publica la hoja o habilita un enlace exportable sin autenticación.", "Usa columnas: ID_MOVIMIENTO | Fecha | Descripción | Categoría | Subcategoría | Monto | Medio_Pago | Cuenta | Nota.", "Pega el enlace, valida la vista previa y confirma el mapeo.", "MIDAS agrega IDs nuevos e ignora IDs ya importados: nunca duplica.", "Las filas inválidas se informan sin detener las filas válidas.", "Cambiar la fuente conserva todo el histórico importado."] },
+  { id: "spreadsheet", title: "Cómo conectar un Spreadsheet", summary: "Preparación, pestaña, mapeo, sincronización y errores.", items: ["Publica la hoja o habilita un enlace exportable sin autenticación.", "Usa columnas: ID_MOVIMIENTO | Fecha | Descripción | Categoría | Subcategoría | Monto | Medio_Pago | Cuenta | Nota.", "Pega el enlace y selecciona desde MIDAS la pestaña que contiene los movimientos.", "Valida la vista previa y confirma el mapeo de columnas.", "MIDAS agrega IDs nuevos e ignora IDs ya importados: nunca duplica.", "Las filas inválidas se informan sin detener las filas válidas.", "Cambiar la fuente conserva todo el histórico importado."] },
   { id: "debts", title: "Deudas", summary: "Saldo, interés, cuotas, pagos y proyección.", items: ["Registra entidad, saldo, interés y pago planificado.", "Cada pago se incorpora a Gastos Efectivos una sola vez.", "El saldo y la fecha proyectada se actualizan con cada pago.", "El simulador de pago adicional no modifica el plan real."] },
   { id: "dashboard", title: "Dashboard y MIDAS Score", summary: "Indicadores, alertas, forecast y recomendaciones.", items: ["El Dashboard resume ingreso, presupuesto, gasto, saldo y deuda.", "El forecast combina ritmo de gasto y deuda pendiente.", "MIDAS Score pondera presupuesto, ahorro, consumo discrecional y deuda.", "MIDAS Advisor separa observación, impacto y recomendación."] },
 ] as const;
@@ -120,8 +120,10 @@ export default function Home() {
   const [newCategory, setNewCategory] = useState({ name: "", groupName: "Necesidades", budget: "", color: "#CBA65B", kind: "variable" });
   const [newDebt, setNewDebt] = useState({ name: "", entity: "", originalAmount: "", currentBalance: "", annualRate: "", minimumPayment: "", plannedPayment: "", dueDay: "1", acquiredAt: today });
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [sheetStep, setSheetStep] = useState<"status" | "url" | "mapping" | "result">("url");
+  const [sheetStep, setSheetStep] = useState<"status" | "url" | "sheet" | "mapping" | "result">("url");
   const [sheetUrl, setSheetUrl] = useState("");
+  const [sheetNames, setSheetNames] = useState<string[]>([]);
+  const [sheetName, setSheetName] = useState("");
   const [sheetPreview, setSheetPreview] = useState<SheetPreview | null>(null);
   const [sheetMapping, setSheetMapping] = useState<SheetMapping>({});
   const [sheetLoading, setSheetLoading] = useState(false);
@@ -377,9 +379,35 @@ export default function Home() {
       setSheetStep("status");
     } else {
       setSheetUrl("");
+      setSheetNames([]);
+      setSheetName("");
       setSheetPreview(null);
       setSheetMapping({});
       setSheetStep("url");
+    }
+  }
+
+  async function listSpreadsheetSheets() {
+    setSheetLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/api/spreadsheet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "list_sheets", url: sheetUrl }),
+      });
+      if (redirectIfUnauthorized(response)) return;
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "No se pudieron detectar las pestañas.");
+      const names = Array.isArray(result.sheets) ? result.sheets.map(String) : [];
+      if (!names.length) throw new Error("El Spreadsheet no tiene pestañas visibles.");
+      setSheetNames(names);
+      setSheetName(names[0]);
+      setSheetStep("sheet");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudieron detectar las pestañas.");
+    } finally {
+      setSheetLoading(false);
     }
   }
 
@@ -390,7 +418,7 @@ export default function Home() {
       const response = await fetch("/api/spreadsheet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "preview", url: sheetUrl }),
+        body: JSON.stringify({ action: "preview", url: sheetUrl, sheetName }),
       });
       if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
@@ -413,7 +441,7 @@ export default function Home() {
       const response = await fetch("/api/spreadsheet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save_source", url: sheetUrl, sourceName: sheetPreview.sourceName, mapping: sheetMapping }),
+        body: JSON.stringify({ action: "save_source", url: sheetUrl, sheetName, sourceName: sheetPreview.sourceName, mapping: sheetMapping }),
       });
       if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
@@ -627,12 +655,12 @@ export default function Home() {
 
       <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
         <DialogContent className="midas-dialog spreadsheet-dialog">
-          <DialogHeader><p className="eyebrow">FUENTE EXTERNA · APPEND ONLY</p><DialogTitle>{sheetStep === "mapping" ? "Mapear columnas" : sheetStep === "result" ? "Sincronización completada" : data.spreadsheetSource && sheetStep === "status" ? "Spreadsheet conectado" : "Obtener datos de Spreadsheet"}</DialogTitle><DialogDescription>Sin Google API, OAuth ni credenciales. La hoja solo alimenta Gastos Efectivos.</DialogDescription></DialogHeader>
+          <DialogHeader><p className="eyebrow">FUENTE EXTERNA · APPEND ONLY</p><DialogTitle>{sheetStep === "sheet" ? "Seleccionar pestaña" : sheetStep === "mapping" ? "Mapear columnas" : sheetStep === "result" ? "Sincronización completada" : data.spreadsheetSource && sheetStep === "status" ? "Spreadsheet conectado" : "Obtener datos de Spreadsheet"}</DialogTitle><DialogDescription>Sin Google API, OAuth ni credenciales. La hoja solo alimenta Gastos Efectivos.</DialogDescription></DialogHeader>
 
           {sheetStep === "status" && data.spreadsheetSource && <div className="sheet-status">
             <div className="sheet-source-card"><div className="integration-icon"><Database /></div><div><span>Fuente actual</span><strong>{data.spreadsheetSource.sourceName}</strong><p>Última sincronización: {data.spreadsheetSource.lastSyncAt ? formatDateTime(data.spreadsheetSource.lastSyncAt) : "pendiente"}</p></div><span className={"status-pill " + (data.spreadsheetSource.lastSyncStatus === "success" ? "success" : data.spreadsheetSource.lastSyncStatus === "partial" ? "warning" : "neutral")}><span />{data.spreadsheetSource.lastSyncStatus}</span></div>
             <div className="sync-summary"><MiniResult label="Encontrados" value={data.spreadsheetSource.lastRowsDetected} /><MiniResult label="Nuevos" value={data.spreadsheetSource.lastRowsInserted} /><MiniResult label="Ignorados" value={data.spreadsheetSource.lastRowsIgnored} /><MiniResult label="Errores" value={data.spreadsheetSource.lastRowsFailed} /></div>
-            <div className="sheet-actions"><Button variant="outline" onClick={() => { setChangingSource(true); setSheetUrl(""); setSheetPreview(null); setSheetMapping({}); setSheetStep("url"); }}><Link2 /> Cambiar fuente de datos</Button><Button className="gold-button" disabled={sheetLoading} onClick={synchronizeSpreadsheet}>{sheetLoading ? <RefreshCw className="spin" /> : <RefreshCw />} {sheetLoading ? "Sincronizando…" : "Sincronizar ahora"}</Button></div>
+            <div className="sheet-actions"><Button variant="outline" onClick={() => { setChangingSource(true); setSheetUrl(""); setSheetNames([]); setSheetName(""); setSheetPreview(null); setSheetMapping({}); setSheetStep("url"); }}><Link2 /> Cambiar fuente de datos</Button><Button className="gold-button" disabled={sheetLoading} onClick={synchronizeSpreadsheet}>{sheetLoading ? <RefreshCw className="spin" /> : <RefreshCw />} {sheetLoading ? "Sincronizando…" : "Sincronizar ahora"}</Button></div>
           </div>}
 
           {sheetStep === "url" && <div className="sheet-url-step">
@@ -640,14 +668,20 @@ export default function Home() {
             {changingSource && <div className="change-warning"><AlertCircle /><p><strong>Cambiar la fuente no eliminará los gastos importados.</strong> Las próximas sincronizaciones usarán el nuevo Spreadsheet.</p></div>}
             <DialogField label="Link del Google Spreadsheet" wide><input value={sheetUrl} onChange={event => setSheetUrl(event.target.value)} placeholder="https://docs.google.com/spreadsheets/d/…" /></DialogField>
             <div className="privacy-note"><ShieldCheck /><span>MIDAS no solicita ni almacena usuario, contraseña, API Key, OAuth o tokens de Google.</span></div>
-            <Button className="gold-button" disabled={!sheetUrl.trim() || sheetLoading} onClick={previewSpreadsheet}>{sheetLoading ? "Validando…" : "Validar y mostrar vista previa"}</Button>
+            <Button className="gold-button" disabled={!sheetUrl.trim() || sheetLoading} onClick={listSpreadsheetSheets}>{sheetLoading ? "Buscando pestañas…" : "Detectar pestañas"}</Button>
+          </div>}
+
+          {sheetStep === "sheet" && <div className="sheet-url-step">
+            <div className="sheet-instruction"><Database /><div><strong>Elige la pestaña que MIDAS debe leer</strong><p>Detectamos {sheetNames.length} {sheetNames.length === 1 ? "pestaña visible" : "pestañas visibles"}. Esta selección se conservará para cada sincronización.</p></div></div>
+            <DialogField label="Pestaña del Spreadsheet" wide><Select value={sheetName} onValueChange={setSheetName}><SelectTrigger className="sheet-tab-select"><SelectValue placeholder="Selecciona una pestaña" /></SelectTrigger><SelectContent>{sheetNames.map(name => <SelectItem value={name} key={name}>{name}</SelectItem>)}</SelectContent></Select></DialogField>
+            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("url")}>Volver</Button><Button className="gold-button" disabled={!sheetName || sheetLoading} onClick={previewSpreadsheet}>{sheetLoading ? "Cargando vista previa…" : "Usar esta pestaña"}</Button></div>
           </div>}
 
           {sheetStep === "mapping" && sheetPreview && <div className="mapping-step">
-            <div className="preview-chip"><Check /> Hoja accesible · {sheetPreview.headers.length} columnas detectadas</div>
+            <div className="preview-chip"><Check /> Pestaña “{sheetPreview.sheetName}” accesible · {sheetPreview.headers.length} columnas detectadas</div>
             <div className="mapping-grid">{SHEET_FIELDS.map(([key, label, required]) => <div className="mapping-row" key={key}><div><strong>{label}</strong>{required && <span>Obligatorio</span>}</div><ChevronRight /><Select value={sheetMapping[key] || "__none"} onValueChange={value => setSheetMapping({ ...sheetMapping, [key]: value === "__none" ? undefined : value })}><SelectTrigger className="mapping-select"><SelectValue placeholder="Sin asignar" /></SelectTrigger><SelectContent><SelectItem value="__none">Sin asignar</SelectItem>{sheetPreview.headers.map(header => <SelectItem value={header} key={header}>{header}</SelectItem>)}</SelectContent></Select></div>)}</div>
             <div className="sheet-preview-table"><span>VISTA PREVIA</span><div><Table><TableHeader><TableRow>{sheetPreview.headers.slice(0, 5).map(header => <TableHead key={header}>{header}</TableHead>)}</TableRow></TableHeader><TableBody>{sheetPreview.preview.slice(0, 3).map((row, index) => <TableRow key={index}>{sheetPreview.headers.slice(0, 5).map(header => <TableCell key={header}>{row[header] || "—"}</TableCell>)}</TableRow>)}</TableBody></Table></div></div>
-            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("url")}>Volver</Button><Button className="gold-button" disabled={sheetLoading || !sheetMapping.source_id || !sheetMapping.date || !sheetMapping.description || !sheetMapping.amount} onClick={saveSpreadsheetSource}>{sheetLoading ? "Guardando…" : "Guardar conexión"}</Button></div>
+            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("sheet")}>Cambiar pestaña</Button><Button className="gold-button" disabled={sheetLoading || !sheetMapping.source_id || !sheetMapping.date || !sheetMapping.description || !sheetMapping.amount} onClick={saveSpreadsheetSource}>{sheetLoading ? "Guardando…" : "Guardar conexión"}</Button></div>
           </div>}
 
           {sheetStep === "result" && syncResult && <div className="sync-result">

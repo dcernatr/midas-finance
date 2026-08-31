@@ -59,6 +59,8 @@ MIDAS no usa Google API, OAuth ni credenciales. Acepta enlaces `/edit`, `drivesd
 
 `Compartir → Acceso general → Cualquier persona con el enlace → Lector`
 
+Al conectar el archivo, MIDAS detecta sus pestañas visibles y permite seleccionar cuál se importará y sincronizará.
+
 Columnas mínimas:
 
 `ID_MOVIMIENTO | Fecha | Descripción | Monto`

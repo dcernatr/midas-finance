@@ -1,3 +1,5 @@
+import { strFromU8, unzipSync } from "fflate";
+
 export type ColumnMapping = {
   source_id: string;
   date: string;
@@ -32,7 +34,8 @@ export function toPublishedCsvUrls(raw: string) {
   if (url.protocol !== "https:" || url.hostname !== "docs.google.com" || !url.pathname.includes("/spreadsheets/d/")) {
     throw new Error("Utiliza un enlace HTTPS de Google Spreadsheet publicado o compartido como CSV.");
   }
-  if (url.pathname.endsWith("/export") || url.searchParams.get("output") === "csv" || url.searchParams.get("format") === "csv") {
+  const sheet = url.searchParams.get("sheet");
+  if (!sheet && (url.pathname.endsWith("/export") || url.searchParams.get("output") === "csv" || url.searchParams.get("format") === "csv")) {
     return [url.toString()];
   }
   const gidFromHash = new URLSearchParams(url.hash.replace(/^#/, "")).get("gid");
@@ -44,11 +47,83 @@ export function toPublishedCsvUrls(raw: string) {
   const match = url.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
   if (!match) throw new Error("No se pudo identificar el Spreadsheet.");
   const base = "https://docs.google.com/spreadsheets/d/" + match[1];
+  if (sheet) return [base + "/gviz/tq?tqx=out:csv&sheet=" + encodeURIComponent(sheet)];
   if (gid) return [base + "/export?format=csv&gid=" + encodeURIComponent(gid)];
   return [
     base + "/gviz/tq?tqx=out:csv",
     base + "/export?format=csv&gid=0",
   ];
+}
+
+function spreadsheetId(raw: string) {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new Error("El link no tiene un formato válido.");
+  }
+  if (url.protocol !== "https:" || url.hostname !== "docs.google.com") {
+    throw new Error("Utiliza un enlace HTTPS de Google Spreadsheet.");
+  }
+  const match = url.pathname.match(/\/spreadsheets\/d\/([^/]+)/);
+  if (!match || match[1] === "e") throw new Error("No se pudo identificar el Spreadsheet.");
+  return match[1];
+}
+
+function decodeXml(value: string) {
+  return value
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+export function parseWorkbookSheetNames(xml: string) {
+  const names: string[] = [];
+  for (const match of xml.matchAll(/<sheet\b([^>]*)\/?\s*>/gi)) {
+    const attributes = match[1];
+    const name = attributes.match(/\bname=(?:"([^"]*)"|'([^']*)')/i)?.slice(1).find(value => value !== undefined);
+    const state = attributes.match(/\bstate=(?:"([^"]*)"|'([^']*)')/i)?.slice(1).find(value => value !== undefined);
+    if (!name || (state && state.toLowerCase() !== "visible")) continue;
+    const decoded = decodeXml(name).trim();
+    if (decoded && !names.includes(decoded)) names.push(decoded);
+  }
+  return names;
+}
+
+export function withSpreadsheetSheet(raw: string, sheetName: string) {
+  const id = spreadsheetId(raw);
+  const selected = sheetName.trim();
+  if (!selected) throw new Error("Selecciona una pestaña del Spreadsheet.");
+  return `https://docs.google.com/spreadsheets/d/${id}/edit?sheet=${encodeURIComponent(selected)}`;
+}
+
+export async function fetchSpreadsheetSheets(rawUrl: string) {
+  const id = spreadsheetId(rawUrl);
+  const response = await fetch(`https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`, {
+    headers: { "User-Agent": "MIDAS/0.5 Spreadsheet Tabs" },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) {
+    throw new Error("MIDAS no pudo leer las pestañas. Verifica que el acceso sea “Cualquier persona con el enlace · Lector”.");
+  }
+  const declaredSize = Number(response.headers.get("content-length") ?? 0);
+  if (declaredSize > 20_000_000) throw new Error("El archivo supera el tamaño permitido para detectar pestañas.");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > 20_000_000) throw new Error("El archivo supera el tamaño permitido para detectar pestañas.");
+  try {
+    const archive = unzipSync(bytes, { filter: file => file.name === "xl/workbook.xml" });
+    const workbook = archive["xl/workbook.xml"];
+    if (!workbook) throw new Error("workbook missing");
+    const sheets = parseWorkbookSheetNames(strFromU8(workbook));
+    if (!sheets.length) throw new Error("sheets missing");
+    return sheets;
+  } catch {
+    throw new Error("MIDAS no pudo identificar las pestañas visibles de este Spreadsheet.");
+  }
 }
 
 export async function fetchSpreadsheet(rawUrl: string) {

@@ -498,6 +498,7 @@ button { cursor: pointer; }
 .sheet-instruction svg { width: 19px; color: var(--gold); }
 .sheet-instruction strong { font-size: 10px; }
 .sheet-instruction p { margin: 3px 0 0; color: var(--muted-text); font-size: 9px; }
+.sheet-tab-select { width: 100%; }
 .change-warning { display: flex; gap: 9px; padding: 11px; color: var(--warning); border: 1px solid rgba(239,180,94,.24); border-radius: 9px; background: rgba(239,180,94,.06); }
 .change-warning svg { width: 16px; flex: none; }
 .change-warning p { margin: 0; color: var(--muted-text); font-size: 9px; line-height: 1.5; }
