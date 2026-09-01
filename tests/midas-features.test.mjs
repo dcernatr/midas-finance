@@ -82,3 +82,12 @@ test("uses the golden MIDAS cat across product identity surfaces", async () => {
   const component = await readFile(new URL("../components/midas-cat-icon.tsx", import.meta.url), "utf8");
   assert.match(component, /midas-cat-v3\.webp/);
 });
+
+test("describes MIDAS as an expense-control hub across identity surfaces", async () => {
+  const files = ["../app/page.tsx", "../app/login/page.tsx", "../app/layout.tsx"];
+  const sources = await Promise.all(files.map(file => readFile(new URL(file, import.meta.url), "utf8")));
+  for (const source of sources) {
+    assert.match(source, /hub de control de gastos/i);
+    assert.doesNotMatch(source, /command center/i);
+  }
+});

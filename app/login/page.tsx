@@ -31,7 +31,7 @@ export default function LoginPage() {
     <main className="login-page dark">
       <section className="login-card">
         <MidasCatIcon className="login-cat" priority size={88} />
-        <p className="eyebrow">FINANCIAL COMMAND CENTER</p>
+        <p className="eyebrow">HUB DE CONTROL DE GASTOS</p>
         <h1>Accede a MIDAS</h1>
         <p className="login-copy">Tus presupuestos, movimientos y deudas permanecen aislados en tu cuenta.</p>
         <div className="login-tabs">

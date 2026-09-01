@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MIDAS — Personal Financial Command Center",
-  description: "Planifica, registra y controla tus finanzas personales con inteligencia.",
+  title: "MIDAS — Hub de control de gastos",
+  description: "Tu hub de control de gastos: organiza presupuestos, ingresos, gastos y deudas en un solo lugar.",
   applicationName: "MIDAS",
 };
 
