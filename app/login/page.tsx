@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { LockKeyhole, Mail, ShieldCheck } from "lucide-react";
+import { MidasCatIcon } from "@/components/midas-cat-icon";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
@@ -29,7 +30,7 @@ export default function LoginPage() {
   return (
     <main className="login-page dark">
       <section className="login-card">
-        <div className="midas-mark">M</div>
+        <MidasCatIcon className="login-cat" priority size={88} />
         <p className="eyebrow">FINANCIAL COMMAND CENTER</p>
         <h1>Accede a MIDAS</h1>
         <p className="login-copy">Tus presupuestos, movimientos y deudas permanecen aislados en tu cuenta.</p>
