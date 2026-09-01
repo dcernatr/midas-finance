@@ -272,7 +272,7 @@ export default function Home() {
   }, [metrics]);
 
   if (!data || !metrics) {
-    return <main className={"midas-app " + theme}><div className="loading-screen"><MidasCatIcon className="loading-cat" priority size={84} /><p>{error || "Preparando tu Command Center…"}</p>{error && <Button onClick={load}>Reintentar</Button>}</div></main>;
+    return <main className={"midas-app " + theme}><div className="loading-screen"><MidasCatIcon className="loading-cat" priority size={84} /><p>{error || "Preparando tu hub de control de gastos…"}</p>{error && <Button onClick={load}>Reintentar</Button>}</div></main>;
   }
 
   const finance = data;
@@ -507,7 +507,7 @@ export default function Home() {
       <header className="topbar">
         <div className="brand-wrap">
           <MidasCatIcon className="brand-cat" priority size={48} />
-          <div><div className="brand">M.I.D.A.S.</div><div className="tagline">Money Intelligence, Debt, Allocation & Spending</div></div>
+          <div><div className="brand">M.I.D.A.S.</div><div className="tagline">Hub de control de gastos</div></div>
         </div>
         <div className="header-actions">
           <div className="month-chip"><span />{monthLabel(monthKey)}</div>
@@ -540,7 +540,7 @@ export default function Home() {
         </TabsList>
 
         <TabsContent value="dashboard" className="page-content">
-          <PageHeading eyebrow="PERSONAL FINANCIAL COMMAND CENTER" title="Control del mes" subtitle="Lo que planificaste, lo que ocurrió y lo que debes corregir." extra={<div className="data-badge"><ShieldCheck /> Datos persistentes y cálculos trazables</div>} />
+          <PageHeading eyebrow="HUB DE CONTROL DE GASTOS" title="Control del mes" subtitle="Lo que planificaste, lo que ocurrió y lo que debes corregir." extra={<div className="data-badge"><ShieldCheck /> Datos persistentes y cálculos trazables</div>} />
           {!metrics.setupComplete && <section className="setup-banner"><div className="setup-icon"><Sparkles /></div><div><strong>Configura tu plan inicial</strong><p>Completa ingreso, ahorro y presupuestos para activar el MIDAS Score y el forecast.</p></div><Button className="gold-button" onClick={() => setTab("plan")}>Configurar <ChevronRight /></Button></section>}
 
           <section className="kpi-grid">
@@ -666,7 +666,7 @@ export default function Home() {
                 {visibleHelp.map(section => <AccordionItem value={section.id} key={section.id} id={"help-" + section.id}><AccordionTrigger><div><span>{section.id === "spreadsheet" ? <Database /> : section.id === "debts" ? <CreditCard /> : section.id === "dashboard" ? <LayoutDashboard /> : section.id === "plan" ? <Target /> : section.id === "ledger" ? <ReceiptText /> : <Sparkles />}</span><div><strong>{section.title}</strong><p>{section.summary}</p></div></div></AccordionTrigger><AccordionContent><ol className="help-steps">{section.items.map((item, index) => <li key={item}><span>{index + 1}</span><p>{item}</p></li>)}</ol>{section.id === "spreadsheet" && <div className="spreadsheet-example"><span>ESTRUCTURA RECOMENDADA</span><code>ID_MOVIMIENTO | Fecha | Descripción | Categoría | Subcategoría | Monto | Medio_Pago | Cuenta | Nota</code><p>Spreadsheet alimenta Gastos Efectivos. MIDAS realiza el control y análisis financiero.</p></div>}</AccordionContent></AccordionItem>)}
               </Accordion>
               {!visibleHelp.length && <div className="panel help-empty"><Search /><strong>Sin resultados</strong><p>Prueba con otra palabra o revisa el índice completo.</p></div>}
-              <article className="panel about-midas" id="about-midas"><MidasCatIcon className="about-cat" size={72} /><div><p className="eyebrow">ACERCA DE MIDAS</p><h2>MIDAS Beta — v0.4.0</h2><p>Money Intelligence, Debt, Allocation & Spending</p><span>Personal Financial Command Center · Datos aislados por usuario</span></div></article>
+              <article className="panel about-midas" id="about-midas"><MidasCatIcon className="about-cat" size={72} /><div><p className="eyebrow">ACERCA DE MIDAS</p><h2>MIDAS Beta — v0.4.0</h2><p>Money Intelligence, Debt, Allocation & Spending</p><span>Hub de control de gastos · Datos aislados por usuario</span></div></article>
             </div>
           </section>
         </TabsContent>
