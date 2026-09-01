@@ -80,5 +80,5 @@ test("uses the golden MIDAS cat across product identity surfaces", async () => {
   const sources = await Promise.all(files.map(file => readFile(new URL(file, import.meta.url), "utf8")));
   for (const source of sources) assert.match(source, /MidasCatIcon/);
   const component = await readFile(new URL("../components/midas-cat-icon.tsx", import.meta.url), "utf8");
-  assert.match(component, /midas-cat\.webp/);
+  assert.match(component, /midas-cat-v3\.webp/);
 });

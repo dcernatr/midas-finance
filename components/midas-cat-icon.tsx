@@ -18,7 +18,7 @@ export function MidasCatIcon({ className = "", priority = false, size = 44 }: Mi
         fill
         priority={priority}
         sizes={`${size}px`}
-        src="/midas-cat.webp"
+        src="/midas-cat-v3.webp"
       />
     </span>
   );
