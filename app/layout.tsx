@@ -4,10 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "MIDAS — Personal Financial Command Center",
   description: "Planifica, registra y controla tus finanzas personales con inteligencia.",
-  icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
-  },
+  applicationName: "MIDAS",
 };
 
 export default function RootLayout({

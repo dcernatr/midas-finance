@@ -65,3 +65,20 @@ test("detects spreadsheet tabs automatically and renders a dropdown", async () =
   assert.match(source, /Pestaña que MIDAS debe leer/);
   assert.doesNotMatch(source, />Detectar pestañas</);
 });
+
+test("uses the five requested effective-expense fields", async () => {
+  const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const field of ["Fecha", "Nombre", "Ingreso", "Gasto", "Categoría"]) {
+    assert.match(source, new RegExp(`<TableHead[^>]*>${field}<`));
+  }
+  assert.match(source, /\["fecha", "nombre", "ingreso", "gasto", "categoria"\]/);
+  assert.match(source, /categoryId: quick\.type === "debt_payment" \? null : quick\.categoryId/);
+});
+
+test("uses the golden MIDAS cat across product identity surfaces", async () => {
+  const files = ["../app/page.tsx", "../app/login/page.tsx", "../app/admin/admin-client.tsx", "../app/admin/page.tsx"];
+  const sources = await Promise.all(files.map(file => readFile(new URL(file, import.meta.url), "utf8")));
+  for (const source of sources) assert.match(source, /MidasCatIcon/);
+  const component = await readFile(new URL("../components/midas-cat-icon.tsx", import.meta.url), "utf8");
+  assert.match(component, /midas-cat\.webp/);
+});

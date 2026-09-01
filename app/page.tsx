@@ -25,6 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { MidasCatIcon } from "@/components/midas-cat-icon";
 
 type Month = { id: string; monthKey: string; income: number; savingsTarget: number; status: string };
 type Category = { id: string; name: string; groupName: string; budget: number; color: string; kind: string; archived: boolean };
@@ -53,7 +54,7 @@ const monthKey = today.slice(0, 7);
 const HELP_SECTIONS = [
   { id: "start", title: "Primeros pasos", summary: "Qué es MIDAS y cómo preparar tu primer mes.", items: ["Define tu ingreso esperado y objetivo de ahorro.", "Asigna presupuestos a las categorías.", "Registra gastos manualmente o conecta un Spreadsheet.", "Revisa Dashboard, MIDAS Score y Advisor para corregir el rumbo."] },
   { id: "plan", title: "Gastos programados", summary: "Categorías, colores, presupuestos y comparación.", items: ["Cada categoría tiene un monto programado y un color identificador.", "Usa el lápiz para editar nombre, grupo, tipo, color y monto programado.", "Los cambios rápidos de presupuesto se guardan al salir del campo.", "Plan vs. Real utiliza los Gastos Efectivos del mismo mes.", "Las categorías con historial se archivan para preservar trazabilidad."] },
-  { id: "ledger", title: "Gastos efectivos", summary: "Registro real consolidado y origen de movimientos.", items: ["El botón + Gasto permite registrar monto, categoría y guardar rápidamente.", "Los movimientos manuales y Spreadsheet conviven en la misma tabla.", "Eliminar un pago de deuda restaura también el saldo de la deuda.", "Los filtros y la exportación trabajan sobre los movimientos visibles."] },
+  { id: "ledger", title: "Gastos efectivos", summary: "Registro real consolidado de ingresos y gastos.", items: ["Cada movimiento usa cinco campos claros: Fecha, Nombre, Ingreso, Gasto y Categoría.", "Los movimientos manuales y Spreadsheet conviven en la misma tabla.", "Eliminar un pago de deuda restaura también el saldo de la deuda.", "Los filtros y la exportación trabajan sobre los movimientos visibles."] },
   { id: "spreadsheet", title: "Cómo conectar un Spreadsheet", summary: "Preparación, pestaña, mapeo, sincronización y errores.", items: ["Publica la hoja o habilita un enlace exportable sin autenticación.", "Usa columnas: ID_MOVIMIENTO | Fecha | Descripción | Categoría | Subcategoría | Monto | Medio_Pago | Cuenta | Nota.", "Pega el enlace y selecciona desde MIDAS la pestaña que contiene los movimientos.", "Valida la vista previa y confirma el mapeo de columnas.", "MIDAS agrega IDs nuevos e ignora IDs ya importados: nunca duplica.", "Las filas inválidas se informan sin detener las filas válidas.", "Cambiar la fuente conserva todo el histórico importado."] },
   { id: "debts", title: "Deudas", summary: "Saldo, interés, cuotas, pagos y proyección.", items: ["Registra entidad, saldo, interés y pago planificado.", "Cada pago se incorpora a Gastos Efectivos una sola vez.", "El saldo y la fecha proyectada se actualizan con cada pago.", "El simulador de pago adicional no modifica el plan real."] },
   { id: "dashboard", title: "Dashboard y MIDAS Score", summary: "Indicadores, alertas, forecast y recomendaciones.", items: ["El Dashboard resume ingreso, presupuesto, gasto, saldo y deuda.", "El forecast combina ritmo de gasto y deuda pendiente.", "MIDAS Score pondera presupuesto, ahorro, consumo discrecional y deuda.", "MIDAS Advisor separa observación, impacto y recomendación."] },
@@ -271,13 +272,14 @@ export default function Home() {
   }, [metrics]);
 
   if (!data || !metrics) {
-    return <main className={"midas-app " + theme}><div className="loading-screen"><div className="midas-mark">M</div><p>{error || "Preparando tu Command Center…"}</p>{error && <Button onClick={load}>Reintentar</Button>}</div></main>;
+    return <main className={"midas-app " + theme}><div className="loading-screen"><MidasCatIcon className="loading-cat" priority size={84} /><p>{error || "Preparando tu Command Center…"}</p>{error && <Button onClick={load}>Reintentar</Button>}</div></main>;
   }
 
   const finance = data;
   const pie = metrics.categoryRows.filter(c => c.actual > 0).map(c => ({ name: c.name, value: c.actual, color: c.color }));
   const filtered = metrics.monthTx.filter(t => {
-    const match = (t.description + " " + t.account).toLowerCase().includes(search.toLowerCase());
+    const categoryName = data.categories.find(category => category.id === t.categoryId)?.name || "";
+    const match = (t.description + " " + categoryName).toLowerCase().includes(search.toLowerCase());
     return match && (typeFilter === "all" || t.type === typeFilter);
   });
   const visibleHelp = HELP_SECTIONS.filter(section => (section.title + " " + section.summary + " " + section.items.join(" ")).toLowerCase().includes(helpSearch.toLowerCase()));
@@ -318,7 +320,7 @@ export default function Home() {
       action: editingTxn ? "update_transaction" : "add_transaction",
       id: editingTxn?.id,
       amount: Number(quick.amount),
-      categoryId: quick.type === "expense" ? quick.categoryId : null,
+      categoryId: quick.type === "debt_payment" ? null : quick.categoryId,
       debtId: quick.type === "debt_payment" ? quick.debtId : null,
       type: quick.type,
       description: quick.description || (quick.type === "debt_payment" ? "Pago de deuda" : "Movimiento"),
@@ -373,17 +375,21 @@ export default function Home() {
     const text = await file.text();
     const lines = text.split(/\r?\n/).filter(Boolean);
     if (lines.length < 2) return setError("El CSV no contiene movimientos.");
-    const header = lines[0].split(",").map(h => h.trim().toLowerCase());
-    if (!["fecha", "descripcion", "monto", "categoria"].every(h => header.includes(h))) {
-      return setError("El CSV debe contener: fecha, descripcion, monto, categoria.");
-    }
+    const header = lines[0].split(",").map(h => h.trim().toLowerCase().replace(/^"|"$/g, ""));
+    const modernFormat = ["fecha", "nombre", "ingreso", "gasto", "categoria"].every(h => header.includes(h));
+    const legacyFormat = ["fecha", "descripcion", "monto", "categoria"].every(h => header.includes(h));
+    if (!modernFormat && !legacyFormat) return setError("El CSV debe contener: fecha, nombre, ingreso, gasto, categoria.");
     let count = 0;
     for (const line of lines.slice(1)) {
       const cells = line.split(",").map(c => c.trim().replace(/^"|"$/g, ""));
       const row = Object.fromEntries(header.map((h, index) => [h, cells[index] || ""]));
       const category = finance.categories.find(c => c.name.toLowerCase() === row.categoria.toLowerCase());
-      if (!category || !Number(row.monto) || !/^\d{4}-\d{2}-\d{2}$/.test(row.fecha)) continue;
-      const ok = await mutate({ action: "add_transaction", date: row.fecha, description: row.descripcion, amount: Number(row.monto), categoryId: category.id, type: "expense", account: row.cuenta || "Importado" });
+      const income = modernFormat ? Number(row.ingreso) : 0;
+      const expense = modernFormat ? Number(row.gasto) : Number(row.monto);
+      const amount = income > 0 ? income : expense;
+      const type = income > 0 ? "income" : "expense";
+      if (!category || !(amount > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(row.fecha)) continue;
+      const ok = await mutate({ action: "add_transaction", date: row.fecha, description: modernFormat ? row.nombre : row.descripcion, amount, categoryId: category.id, type, account: "Importado" });
       if (ok) count++;
     }
     setNotice(count + " movimientos importados; las filas dudosas fueron omitidas.");
@@ -391,8 +397,14 @@ export default function Home() {
 
   function exportCsv() {
     const rows: Array<Array<string | number>> = [
-      ["fecha", "descripcion", "monto", "categoria", "tipo", "cuenta"],
-      ...filtered.map(t => [t.date, t.description, t.amount, finance.categories.find(c => c.id === t.categoryId)?.name || "", t.type, t.account]),
+      ["fecha", "nombre", "ingreso", "gasto", "categoria"],
+      ...filtered.map(t => [
+        t.date,
+        t.description,
+        t.type === "income" ? t.amount : "",
+        t.type === "income" ? "" : t.amount,
+        finance.categories.find(c => c.id === t.categoryId)?.name || finance.debts.find(d => d.id === t.debtId)?.name || "",
+      ]),
     ];
     const csv = rows.map(row => row.map(value => '"' + String(value).replace(/"/g, '""') + '"').join(",")).join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -494,7 +506,7 @@ export default function Home() {
     <main className={"midas-app " + theme}>
       <header className="topbar">
         <div className="brand-wrap">
-          <div className="midas-mark">M</div>
+          <MidasCatIcon className="brand-cat" priority size={48} />
           <div><div className="brand">M.I.D.A.S.</div><div className="tagline">Money Intelligence, Debt, Allocation & Spending</div></div>
         </div>
         <div className="header-actions">
@@ -511,7 +523,7 @@ export default function Home() {
               <DropdownMenuItem onSelect={() => void signOut()}><LogOut /> Cerrar sesión</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button className="gold-button desktop-add" onClick={() => openQuick()}><Plus /> Gasto</Button>
+          <Button className="gold-button desktop-add" onClick={() => openQuick()}><Plus /> Movimiento</Button>
         </div>
       </header>
 
@@ -593,24 +605,24 @@ export default function Home() {
         </TabsContent>
 
         <TabsContent value="ledger" className="page-content">
-          <PageHeading eyebrow="SINGLE SOURCE OF TRUTH" title="Gastos efectivos" subtitle="Cada movimiento se registra una sola vez y alimenta todo MIDAS." compact extra={<div className="heading-actions"><Tooltip><TooltipTrigger asChild><Button variant="outline" onClick={openSpreadsheet} disabled={sheetLoading}>{sheetLoading ? <RefreshCw className="spin" /> : <Database />}{data.spreadsheetSource ? "Sincronizar Spreadsheet" : "Obtener datos de Spreadsheet"}</Button></TooltipTrigger><TooltipContent>Importa únicamente movimientos nuevos desde una hoja publicada.</TooltipContent></Tooltip><Button className="gold-button" onClick={() => openQuick()}><Plus /> Registrar gasto</Button></div>} />
+          <PageHeading eyebrow="SINGLE SOURCE OF TRUTH" title="Gastos efectivos" subtitle="Fecha, nombre, ingreso, gasto y categoría en una sola vista." compact extra={<div className="heading-actions"><Tooltip><TooltipTrigger asChild><Button variant="outline" onClick={openSpreadsheet} disabled={sheetLoading}>{sheetLoading ? <RefreshCw className="spin" /> : <Database />}{data.spreadsheetSource ? "Sincronizar Spreadsheet" : "Obtener datos de Spreadsheet"}</Button></TooltipTrigger><TooltipContent>Importa únicamente movimientos nuevos desde una hoja publicada.</TooltipContent></Tooltip><Button className="gold-button" onClick={() => openQuick()}><Plus /> Registrar movimiento</Button></div>} />
           {data.spreadsheetSource && <section className="spreadsheet-connection"><div><span className={"connection-dot " + data.spreadsheetSource.lastSyncStatus} /><div><strong>Spreadsheet conectado</strong><p>{data.spreadsheetSource.sourceName} · Última sincronización: {data.spreadsheetSource.lastSyncAt ? formatDateTime(data.spreadsheetSource.lastSyncAt) : "pendiente"}</p></div></div><button onClick={openSpreadsheet}>Gestionar fuente <ChevronRight /></button></section>}
           <section className="ledger-toolbar panel">
-            <div className="search-box"><Search /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar descripción, cuenta…" aria-label="Buscar movimientos" /></div>
+            <div className="search-box"><Search /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar nombre o categoría…" aria-label="Buscar movimientos" /></div>
             <Select value={typeFilter} onValueChange={setTypeFilter}><SelectTrigger className="filter-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos los tipos</SelectItem><SelectItem value="expense">Gastos</SelectItem><SelectItem value="income">Ingresos</SelectItem><SelectItem value="debt_payment">Pagos de deuda</SelectItem></SelectContent></Select>
             <input ref={importRef} type="file" accept=".csv,text/csv" hidden onChange={e => e.target.files?.[0] && importCsv(e.target.files[0])} />
             <Button variant="outline" onClick={() => importRef.current?.click()}><FileUp /> Importar CSV</Button>
             <Button variant="outline" onClick={exportCsv}><Download /> Exportar</Button>
           </section>
           <section className="panel ledger-panel">
-            <Table className="midas-table ledger-table"><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Descripción</TableHead><TableHead>Categoría / deuda</TableHead><TableHead>Cuenta</TableHead><TableHead>Origen</TableHead><TableHead>Tipo</TableHead><TableHead className="align-right">Monto</TableHead><TableHead /></TableRow></TableHeader>
+            <Table className="midas-table ledger-table"><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Nombre</TableHead><TableHead className="align-right">Ingreso</TableHead><TableHead className="align-right">Gasto</TableHead><TableHead>Categoría</TableHead><TableHead><span className="sr-only">Acciones</span></TableHead></TableRow></TableHeader>
               <TableBody>{filtered.map(t => {
                 const category = data.categories.find(c => c.id === t.categoryId);
                 const debt = data.debts.find(d => d.id === t.debtId);
-                return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short" })}</TableCell><TableCell className="strong-cell">{t.description}</TableCell><TableCell>{category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell className="muted-cell">{t.account}</TableCell><TableCell><span className={"source-badge " + t.sourceType}>{t.sourceType === "spreadsheet" ? <Database /> : <ReceiptText />}{t.sourceType === "spreadsheet" ? "Spreadsheet" : "Manual"}</span></TableCell><TableCell><span className={"type-chip " + t.type}>{t.type === "expense" ? "Gasto" : t.type === "income" ? "Ingreso" : "Pago deuda"}</span></TableCell><TableCell className={"align-right amount-cell " + (t.type === "income" ? "positive" : "")}>{t.type === "income" ? "+" : "−"}{currency2.format(t.amount)}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
+                return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</TableCell><TableCell className="strong-cell"><span className="transaction-name">{t.description}</span><span className="transaction-origin">{t.sourceType === "spreadsheet" ? "Spreadsheet" : "Manual"}</span></TableCell><TableCell className="align-right amount-cell positive">{t.type === "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell className="align-right amount-cell">{t.type !== "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell>{category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
               })}</TableBody>
             </Table>
-            {!filtered.length && <EmptyState icon={<ReceiptText />} title="No hay movimientos" text={search || typeFilter !== "all" ? "No encontramos resultados con esos filtros." : "Registra tu primer gasto en menos de cinco segundos."} action={<Button className="gold-button" onClick={() => openQuick()}><Plus /> Gasto</Button>} />}
+            {!filtered.length && <EmptyState icon={<ReceiptText />} title="No hay movimientos" text={search || typeFilter !== "all" ? "No encontramos resultados con esos filtros." : "Registra tu primer ingreso o gasto."} action={<Button className="gold-button" onClick={() => openQuick()}><Plus /> Movimiento</Button>} />}
           </section>
         </TabsContent>
 
@@ -654,13 +666,13 @@ export default function Home() {
                 {visibleHelp.map(section => <AccordionItem value={section.id} key={section.id} id={"help-" + section.id}><AccordionTrigger><div><span>{section.id === "spreadsheet" ? <Database /> : section.id === "debts" ? <CreditCard /> : section.id === "dashboard" ? <LayoutDashboard /> : section.id === "plan" ? <Target /> : section.id === "ledger" ? <ReceiptText /> : <Sparkles />}</span><div><strong>{section.title}</strong><p>{section.summary}</p></div></div></AccordionTrigger><AccordionContent><ol className="help-steps">{section.items.map((item, index) => <li key={item}><span>{index + 1}</span><p>{item}</p></li>)}</ol>{section.id === "spreadsheet" && <div className="spreadsheet-example"><span>ESTRUCTURA RECOMENDADA</span><code>ID_MOVIMIENTO | Fecha | Descripción | Categoría | Subcategoría | Monto | Medio_Pago | Cuenta | Nota</code><p>Spreadsheet alimenta Gastos Efectivos. MIDAS realiza el control y análisis financiero.</p></div>}</AccordionContent></AccordionItem>)}
               </Accordion>
               {!visibleHelp.length && <div className="panel help-empty"><Search /><strong>Sin resultados</strong><p>Prueba con otra palabra o revisa el índice completo.</p></div>}
-              <article className="panel about-midas" id="about-midas"><div className="midas-mark">M</div><div><p className="eyebrow">ACERCA DE MIDAS</p><h2>MIDAS Beta — v0.3.0</h2><p>Money Intelligence, Debt, Allocation & Spending</p><span>Personal Financial Command Center · Datos aislados por usuario</span></div></article>
+              <article className="panel about-midas" id="about-midas"><MidasCatIcon className="about-cat" size={72} /><div><p className="eyebrow">ACERCA DE MIDAS</p><h2>MIDAS Beta — v0.4.0</h2><p>Money Intelligence, Debt, Allocation & Spending</p><span>Personal Financial Command Center · Datos aislados por usuario</span></div></article>
             </div>
           </section>
         </TabsContent>
       </Tabs>
 
-      <Button className="floating-add gold-button" onClick={() => openQuick()}><Plus /><span>Gasto</span></Button>
+      <Button className="floating-add gold-button" onClick={() => openQuick()}><Plus /><span>Movimiento</span></Button>
 
       <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
         <DialogContent className="midas-dialog spreadsheet-dialog">
@@ -703,14 +715,14 @@ export default function Home() {
 
       <Dialog open={quickOpen} onOpenChange={open => { setQuickOpen(open); if (!open) setEditingTxn(null); }}>
         <DialogContent className="midas-dialog quick-dialog">
-          <DialogHeader><p className="eyebrow">{editingTxn ? "EDICIÓN TRAZABLE" : "REGISTRO EN MENOS DE 5 SEGUNDOS"}</p><DialogTitle>{editingTxn ? "Editar movimiento" : "+ Gasto"}</DialogTitle><DialogDescription>{editingTxn ? "La edición conserva el origen y el identificador del movimiento." : "Monto → categoría → guardar. Lo demás es opcional."}</DialogDescription></DialogHeader>
+          <DialogHeader><p className="eyebrow">{editingTxn ? "EDICIÓN TRAZABLE" : "REGISTRO SIMPLE"}</p><DialogTitle>{editingTxn ? "Editar movimiento" : "Nuevo movimiento"}</DialogTitle><DialogDescription>Completa fecha, nombre, ingreso o gasto y categoría.</DialogDescription></DialogHeader>
           {!editingTxn && <div className="smart-entry"><div className="smart-label"><Sparkles /> Smart Entry</div><div className="smart-row"><input value={quick.smart} onChange={e => setQuick({ ...quick, smart: e.target.value })} onKeyDown={e => e.key === "Enter" && parseSmart()} placeholder='Ejemplo: “45 almuerzo visa”' /><Button variant="outline" onClick={parseSmart}>Interpretar</Button></div></div>}
           <div className="movement-switch"><button className={quick.type === "expense" ? "active" : ""} onClick={() => setQuick({ ...quick, type: "expense" })}>Gasto</button><button className={quick.type === "income" ? "active" : ""} onClick={() => setQuick({ ...quick, type: "income" })}>Ingreso</button><button className={quick.type === "debt_payment" ? "active" : ""} onClick={() => setQuick({ ...quick, type: "debt_payment" })}>Pago de deuda</button></div>
           <div className="quick-amount"><span>S/</span><input autoFocus type="number" min="0" step="0.01" value={quick.amount} onChange={e => setQuick({ ...quick, amount: e.target.value })} placeholder="0.00" /></div>
-          {quick.type === "expense" && <div className="quick-categories"><label>Categoría</label><div>{data.categories.filter(c => !c.archived).map(c => <button key={c.id} className={quick.categoryId === c.id ? "selected" : ""} onClick={() => setQuick({ ...quick, categoryId: c.id })}><span style={{ background: c.color }} />{c.name}</button>)}</div></div>}
+          {quick.type !== "debt_payment" && <div className="quick-categories"><label>Categoría</label><div>{data.categories.filter(c => !c.archived).map(c => <button type="button" key={c.id} className={quick.categoryId === c.id ? "selected" : ""} onClick={() => setQuick({ ...quick, categoryId: c.id })}><span style={{ background: c.color }} />{c.name}</button>)}</div></div>}
           {quick.type === "debt_payment" && <DialogField label="Deuda"><Select value={quick.debtId} onValueChange={value => setQuick({ ...quick, debtId: value })}><SelectTrigger className="full-select"><SelectValue placeholder="Selecciona una deuda" /></SelectTrigger><SelectContent>{data.debts.map(debt => <SelectItem key={debt.id} value={debt.id}>{debt.name} · {currency.format(debt.currentBalance)}</SelectItem>)}</SelectContent></Select></DialogField>}
-          <div className="quick-extra-grid"><DialogField label="Descripción" optional><input value={quick.description} onChange={e => setQuick({ ...quick, description: e.target.value })} placeholder="¿En qué fue?" /></DialogField><DialogField label="Cuenta"><Select value={quick.account} onValueChange={value => setQuick({ ...quick, account: value })}><SelectTrigger className="full-select"><SelectValue /></SelectTrigger><SelectContent>{["Efectivo", "BCP", "Visa", "Yape", "Cuenta bancaria"].map(account => <SelectItem value={account} key={account}>{account}</SelectItem>)}</SelectContent></Select></DialogField></div>
-          <Button className="gold-button save-expense" disabled={saving || !Number(quick.amount) || (quick.type === "expense" && !quick.categoryId) || (quick.type === "debt_payment" && !quick.debtId)} onClick={saveQuick}>{saving ? "Guardando…" : editingTxn ? "Actualizar movimiento" : "Guardar movimiento"}</Button>
+          <div className="quick-extra-grid"><DialogField label="Fecha"><input type="date" value={quick.date} onChange={e => setQuick({ ...quick, date: e.target.value })} /></DialogField><DialogField label="Nombre"><input value={quick.description} onChange={e => setQuick({ ...quick, description: e.target.value })} placeholder={quick.type === "income" ? "Ej. Sueldo" : "Ej. Supermercado"} /></DialogField></div>
+          <Button className="gold-button save-expense" disabled={saving || !Number(quick.amount) || (!quick.description.trim() && quick.type !== "debt_payment") || (quick.type !== "debt_payment" && !quick.categoryId) || (quick.type === "debt_payment" && !quick.debtId)} onClick={saveQuick}>{saving ? "Guardando…" : editingTxn ? "Actualizar movimiento" : "Guardar movimiento"}</Button>
         </DialogContent>
       </Dialog>
 
