@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { MidasCatIcon } from "@/components/midas-cat-icon";
 
 type AdminUser = { id: string; email: string; displayName: string | null; role: string; status: string; createdAt: string; lastLoginAt: string };
 type Sync = { id: string; rowsDetected: number; rowsInserted: number; rowsIgnored: number; rowsFailed: number; status: string; createdAt: string };
@@ -94,13 +95,13 @@ export default function AdminClient() {
   ), [data, search]);
 
   if (!data) {
-    return <main className="midas-app dark"><div className="loading-screen"><div className="midas-mark">M</div><p>{error || "Preparando ADMIN…"}</p>{error && <Button onClick={load}>Reintentar</Button>}</div></main>;
+    return <main className="midas-app dark"><div className="loading-screen"><MidasCatIcon className="loading-cat" priority size={84} /><p>{error || "Preparando ADMIN…"}</p>{error && <Button onClick={load}>Reintentar</Button>}</div></main>;
   }
 
   return (
     <main className="midas-app dark admin-app">
       <header className="topbar admin-topbar">
-        <div className="brand-wrap"><div className="midas-mark">M</div><div><div className="brand">M.I.D.A.S. ADMIN</div><div className="tagline">Seguridad · Usuarios · Integraciones · Sistema</div></div></div>
+        <div className="brand-wrap"><MidasCatIcon className="brand-cat" priority size={48} /><div><div className="brand">M.I.D.A.S. ADMIN</div><div className="tagline">Seguridad · Usuarios · Integraciones · Sistema</div></div></div>
         <Button variant="outline" asChild><Link href="/"><ArrowLeft /> Volver a MIDAS</Link></Button>
       </header>
       {error && <div className="global-message error-message"><AlertCircle />{error}</div>}

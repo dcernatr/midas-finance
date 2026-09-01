@@ -1,6 +1,7 @@
 import { requireAdmin } from "../../lib/auth";
 import AdminClient from "./admin-client";
 import Link from "next/link";
+import { MidasCatIcon } from "@/components/midas-cat-icon";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ export default async function AdminPage() {
   if (!authorized) {
     return (
       <main className="midas-app dark admin-denied">
-        <div className="midas-mark">M</div>
+        <MidasCatIcon className="loading-cat" priority size={92} />
         <h1>Acceso restringido</h1>
         <p>ADMIN está disponible exclusivamente para usuarios autorizados.</p>
         <Link href="/">Volver a MIDAS</Link>
