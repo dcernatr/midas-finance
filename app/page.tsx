@@ -29,6 +29,7 @@ import { MidasCatIcon } from "@/components/midas-cat-icon";
 import { SpreadsheetMapping } from "@/components/spreadsheet-mapping";
 import type { ColumnMapping } from "@/lib/spreadsheet";
 import { ApiResponseError, readApiResponse, spreadsheetRequest } from "@/lib/api-response";
+import { DEFAULT_LEDGER_FILTERS, filterLedger, ledgerPeriods } from "@/lib/ledger-view";
 
 type Month = { id: string; monthKey: string; income: number; savingsTarget: number; status: string };
 type Category = { id: string; name: string; groupName: string; budget: number; color: string; kind: string; archived: boolean };
@@ -112,8 +113,9 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
+  const [search, setSearch] = useState<string>(DEFAULT_LEDGER_FILTERS.search);
+  const [typeFilter, setTypeFilter] = useState<string>(DEFAULT_LEDGER_FILTERS.type);
+  const [ledgerPeriod, setLedgerPeriod] = useState<string>(DEFAULT_LEDGER_FILTERS.period);
   const [extras, setExtras] = useState<Record<string, number>>({});
   const [quick, setQuick] = useState({ amount: "", categoryId: "", description: "", account: "Efectivo", type: "expense", debtId: "", smart: "", date: today });
   const [newCategory, setNewCategory] = useState({ name: "", groupName: "Necesidades", budget: "", color: "#CBA65B", kind: "variable" });
@@ -128,22 +130,25 @@ export default function Home() {
   const [sheetLoading, setSheetLoading] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncProgress, setSyncProgress] = useState<SyncResult | null>(null);
+  const [syncRefreshPending, setSyncRefreshPending] = useState(false);
   const syncRequestId = useRef<string | null>(null);
   const syncBusy = useRef(false);
   const [changingSource, setChangingSource] = useState(false);
   const [helpSearch, setHelpSearch] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
 
-  async function load() {
+  async function load(): Promise<FinanceState | null> {
     setError("");
     try {
-      const response = await fetch("/api/state?month=" + monthKey);
-      if (redirectIfUnauthorized(response)) return;
+      const response = await fetch("/api/state?month=" + monthKey, { cache: "no-store" });
+      if (redirectIfUnauthorized(response)) return null;
       const result = await readApiResponse<FinanceState>(response);
       if (!response.ok) throw new Error(result.error || "No se pudo cargar MIDAS.");
       setData(result);
+      return result;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo cargar MIDAS.");
+      return null;
     }
   }
 
@@ -271,11 +276,9 @@ export default function Home() {
 
   const finance = data;
   const pie = metrics.categoryRows.filter(c => c.actual > 0).map(c => ({ name: c.name, value: c.actual, color: c.color }));
-  const filtered = metrics.monthTx.filter(t => {
-    const categoryName = data.categories.find(category => category.id === t.categoryId)?.name || "";
-    const match = [t.description, categoryName, t.code, t.sourceName].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase());
-    return match && (typeFilter === "all" || t.type === typeFilter);
-  });
+  const filtered = filterLedger(data.transactions, data.categories, { period: ledgerPeriod, type: typeFilter, search });
+  const availablePeriods = ledgerPeriods(data.transactions, monthKey);
+  const hasLedgerFilters = search.trim() !== "" || typeFilter !== "all" || ledgerPeriod !== "all";
   const visibleHelp = HELP_SECTIONS.filter(section => (section.title + " " + section.summary + " " + section.items.join(" ")).toLowerCase().includes(helpSearch.toLowerCase()));
   const scoreTone = metrics.score === null ? "neutral" : metrics.score >= 85 ? "success" : metrics.score >= 70 ? "good" : metrics.score >= 50 ? "warning" : "danger";
   const scoreLabel = metrics.score === null ? "Sin datos" : metrics.score >= 85 ? "Óptimo" : metrics.score >= 70 ? "Bueno" : metrics.score >= 50 ? "Atención" : "Crítico";
@@ -405,7 +408,7 @@ export default function Home() {
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "midas-" + monthKey + ".csv";
+    anchor.download = "midas-" + (ledgerPeriod === "all" ? "historico" : ledgerPeriod) + ".csv";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -483,9 +486,12 @@ export default function Home() {
       } while (!result.done);
       setSyncResult(result);
       syncRequestId.current = null;
-      await load();
+      const refreshed = await load();
+      setSyncRefreshPending(!refreshed);
+      showAllMovements();
       setSheetStep("result");
-      setNotice("Sincronización completada");
+      if (refreshed) setNotice("Sincronización completada. Gastos Efectivos muestra todos los meses.");
+      else { setNotice(""); setError("La sincronización terminó, pero no se pudo actualizar la vista. Pulsa Actualizar vista; no necesitas importar otra vez."); }
     } catch (cause) {
       if (cause instanceof ApiResponseError) {
         if (cause.status === 401) { window.location.assign("/login"); return; }
@@ -497,6 +503,25 @@ export default function Home() {
       syncBusy.current = false;
       setSheetLoading(false);
     }
+  }
+
+  function showAllMovements() {
+    setSearch(DEFAULT_LEDGER_FILTERS.search);
+    setTypeFilter(DEFAULT_LEDGER_FILTERS.type);
+    setLedgerPeriod(DEFAULT_LEDGER_FILTERS.period);
+    setTab("ledger");
+  }
+
+  async function viewSyncedMovements() {
+    if (syncRefreshPending) {
+      setSheetLoading(true);
+      const refreshed = await load();
+      setSheetLoading(false);
+      if (!refreshed) return;
+      setSyncRefreshPending(false);
+    }
+    showAllMovements();
+    setSheetOpen(false);
   }
 
   return (
@@ -608,11 +633,16 @@ export default function Home() {
           <section className="ledger-toolbar panel">
             <div className="search-box"><Search /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar nombre, código o categoría…" aria-label="Buscar movimientos" /></div>
             <Select value={typeFilter} onValueChange={setTypeFilter}><SelectTrigger className="filter-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos los tipos</SelectItem><SelectItem value="expense">Gastos</SelectItem><SelectItem value="income">Ingresos</SelectItem><SelectItem value="debt_payment">Pagos de deuda</SelectItem></SelectContent></Select>
+            <select className="ledger-period" aria-label="Mes de los movimientos" value={ledgerPeriod} onChange={event => setLedgerPeriod(event.target.value)}>
+              <option value="all">Todos los meses</option>
+              {availablePeriods.map(period => <option key={period} value={period}>{monthLabel(period)}</option>)}
+            </select>
             <input ref={importRef} type="file" accept=".csv,text/csv" hidden onChange={e => e.target.files?.[0] && importCsv(e.target.files[0])} />
             <Button variant="outline" onClick={() => importRef.current?.click()}><FileUp /> Importar CSV</Button>
             <Button variant="outline" onClick={exportCsv}><Download /> Exportar</Button>
           </section>
           <section className="panel ledger-panel">
+            <div className="ledger-summary"><p role="status">{filtered.length} de {data.transactions.length} movimientos · {ledgerPeriod === "all" ? "Todos los meses" : monthLabel(ledgerPeriod)}<span>El Dashboard mantiene el cálculo del mes actual.</span></p>{hasLedgerFilters && <Button variant="outline" onClick={showAllMovements}>Quitar filtros</Button>}</div>
             <Table className="midas-table ledger-table"><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Nombre</TableHead><TableHead className="align-right">Ingreso</TableHead><TableHead className="align-right">Gasto</TableHead><TableHead>Categoría</TableHead><TableHead><span className="sr-only">Acciones</span></TableHead></TableRow></TableHeader>
               <TableBody>{filtered.map(t => {
                 const category = data.categories.find(c => c.id === t.categoryId);
@@ -620,7 +650,7 @@ export default function Home() {
                 return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</TableCell><TableCell className="strong-cell"><span className="transaction-name">{t.description}</span><span className="transaction-origin"><code className="transaction-code">{t.code || "Pendiente"}</code><span title={t.sourceName || "Registro manual"}>{t.sourceType === "spreadsheet" ? "Hoja · " + (t.sourceName?.split(" · ").slice(1).join(" · ") || "Spreadsheet") : "Manual"}</span></span></TableCell><TableCell className="align-right amount-cell positive">{t.type === "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell className="align-right amount-cell">{t.type !== "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell>{category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
               })}</TableBody>
             </Table>
-            {!filtered.length && <EmptyState icon={<ReceiptText />} title="No hay movimientos" text={search || typeFilter !== "all" ? "No encontramos resultados con esos filtros." : "Registra tu primer ingreso o gasto."} action={<Button className="gold-button" onClick={() => openQuick()}><Plus /> Movimiento</Button>} />}
+            {!filtered.length && <EmptyState icon={<ReceiptText />} title={data.transactions.length ? "No hay resultados con estos filtros" : "No hay movimientos"} text={data.transactions.length ? "Hay movimientos guardados. Quita los filtros para ver el histórico completo." : "Registra tu primer ingreso o gasto, o sincroniza una pestaña."} action={data.transactions.length ? <Button className="gold-button" onClick={showAllMovements}>Ver todos los movimientos</Button> : <Button className="gold-button" onClick={() => openQuick()}><Plus /> Movimiento</Button>} />}
           </section>
         </TabsContent>
 
@@ -707,7 +737,8 @@ export default function Home() {
             <div className={"result-icon " + syncResult.status}>{syncResult.status === "success" ? <Check /> : <AlertCircle />}</div>
             <div className="sync-summary large"><MiniResult label="Encontrados" value={syncResult.detected} /><MiniResult label="Nuevos agregados" value={syncResult.inserted} /><MiniResult label="Existentes ignorados" value={syncResult.ignored} /><MiniResult label="Errores" value={syncResult.failed} /></div>
             {syncResult.errors.length > 0 && <div className="sync-errors"><strong>{syncResult.failed} registros no pudieron importarse</strong>{syncResult.errors.map(error => <p key={error.row}>Fila {error.row} — {error.reason}</p>)}</div>}
-            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("status")}>Ver fuente</Button><Button className="gold-button" onClick={() => setSheetOpen(false)}>Cerrar</Button></div>
+            <p className="mapping-explainer">Los movimientos conservan la fecha de la hoja y se muestran junto con tus registros manuales, en todos los meses.</p>
+            <div className="sheet-actions"><Button variant="outline" disabled={sheetLoading} onClick={() => setSheetStep("status")}>Ver fuente</Button><Button className="gold-button" disabled={sheetLoading} onClick={viewSyncedMovements}>{sheetLoading ? "Actualizando…" : syncRefreshPending ? "Actualizar vista" : "Ver movimientos"}</Button></div>
           </div>}
         </DialogContent>
       </Dialog>

@@ -313,3 +313,27 @@ test("overlapping retries checkpoint each batch once", async () => {
     assert.equal(fixture.tables.transactions.size, 0);
   } finally { fixture.restore(); }
 });
+
+test("August sheet imports are returned by September state and visible beside manual rows", async () => {
+  const fixture = await syncFixture(3);
+  const { GET } = await import("../app/api/state/route.ts");
+  const { filterLedger } = await import("../lib/ledger-view.ts");
+  try {
+    fixture.csv = fixture.csv.replaceAll("02/09/26", "28/08/26");
+    await add(fixture.tables, "manual-september", "manual");
+    await add(fixture.tables, "other-user", "manual", "2026-08-28", "expense", "u2");
+    const result = await fixture.sync("august-visible");
+    assert.equal(result.body.inserted, 3);
+    const response = await GET(new Request("https://midas.test/api/state?month=2026-09"));
+    const state = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(state));
+    assert.equal(state.month.monthKey, "2026-09");
+    assert.equal(state.transactions.length, 4);
+    assert.equal(state.transactions.filter(row => row.date.startsWith("2026-08")).length, 3);
+    const visible = filterLedger(state.transactions, state.categories);
+    assert.equal(visible.length, 4);
+    assert.ok(visible.some(row => row.id === "manual-september"));
+    assert.ok(!visible.some(row => row.id === "other-user"));
+    assert.equal(new Set(visible.map(row => row.code)).size, 4);
+  } finally { fixture.restore(); }
+});
