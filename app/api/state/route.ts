@@ -9,6 +9,8 @@ import type { MidasUser } from "../../../lib/midas-data";
 import { withMovementCode, ensureMovementCodes } from "../../../lib/ledger-store";
 import { codePrefix } from "../../../lib/ledger";
 import { normalizeDate } from "../../../lib/spreadsheet";
+import { loadBudgetProfile, budgetAction } from "../../../lib/budget-store";
+import { validPeriod, planFor, periodWindow, resolveCategory } from "../../../lib/budgeting";
 
 const DEFAULT_CATEGORIES = [
   ["Vivienda", "Necesidades", "#CBA65B", "fixed"],
@@ -49,18 +51,23 @@ async function ensureBaseState(tables: TablesDB, userId: string, monthKey: strin
 }
 
 async function readState(tables: TablesDB, userId: string, monthKey: string, currentUser: MidasUser) {
+  validPeriod(monthKey);
   await ensureBaseState(tables, userId, monthKey);
   const [months, categories, transactions, debts, sources] = await Promise.all([
     listRows(tables, APPWRITE_TABLES.months, [Query.equal("user_id", userId), Query.equal("month_key", monthKey)], 1),
-    listRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", userId)]),
+    listAllRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", userId)]),
     listAllRows(tables, APPWRITE_TABLES.transactions, [Query.equal("user_id", userId), Query.orderDesc("date")]),
     listRows(tables, APPWRITE_TABLES.debts, [Query.equal("user_id", userId), Query.orderDesc("$createdAt")]),
     listRows(tables, APPWRITE_TABLES.sources, [Query.equal("user_id", userId)], 1),
   ]);
+  const mappedCategories = categories.map(mapCategory);
+  const budgetProfile = await loadBudgetProfile(tables, userId, mappedCategories);
+  const plan = planFor(budgetProfile, monthKey);
   return {
+    budgetProfile, period: periodWindow(monthKey, budgetProfile.starts),
     month: months[0] ? mapMonth(months[0]) : null,
-    categories: categories.map(mapCategory),
-    transactions: (await ensureMovementCodes(tables, userId, transactions)).map(mapTransaction),
+    categories: mappedCategories.map(c => ({ ...c, budget: plan[c.id] ?? 0, planned: Object.hasOwn(plan, c.id) })),
+    transactions: (await ensureMovementCodes(tables, userId, transactions)).map(row => { const movement = mapTransaction(row); return { ...movement, ...resolveCategory(movement, mappedCategories, budgetProfile) }; }),
     debts: debts.map(mapDebt),
     spreadsheetSource: sources[0] ? mapSource(sources[0]) : null,
     currentUser: { email: currentUser.email, displayName: currentUser.displayName, role: currentUser.role, status: currentUser.status },
@@ -109,7 +116,7 @@ export async function GET(request: Request) {
   try {
     const { user, tables } = await ensureContext({ logAccess: true });
     const monthKey = new URL(request.url).searchParams.get("month") ?? currentMonthKey();
-    return Response.json(await readState(tables, user.id, monthKey, user));
+    return Response.json(await readState(tables, user.id, monthKey, user), { headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return authErrorResponse(error);
   }
@@ -120,38 +127,18 @@ export async function POST(request: Request) {
     const { user, tables } = await ensureContext();
     const payload = await request.json() as Record<string, unknown>;
     const action = String(payload.action ?? "");
-    const monthKey = String(payload.monthKey ?? currentMonthKey());
+    const monthKey = validPeriod(String(payload.monthKey ?? currentMonthKey()));
 
-    if (action === "set_month") {
+    if (action.startsWith("budget_")) {
+      await budgetAction(tables, user.id, payload);
+    } else if (["add_category", "update_category"].includes(action)) {
+      await budgetAction(tables, user.id, { ...payload, action: "budget_category" });
+    } else if (action === "set_month") {
       await ensureBaseState(tables, user.id, monthKey);
       const month = await findRow(tables, APPWRITE_TABLES.months, [Query.equal("user_id", user.id), Query.equal("month_key", monthKey)]);
       if (month) await updateRow(tables, APPWRITE_TABLES.months, month.$id, { income: Number(payload.income) || 0, savings_target: Number(payload.savingsTarget) || 0 });
-    } else if (action === "add_category") {
-      const name = String(payload.name ?? "").trim();
-      if (!name) return Response.json({ error: "El nombre de categoría es obligatorio." }, { status: 400 });
-      await createRow(tables, APPWRITE_TABLES.categories, id("cat"), {
-        user_id: user.id, name, group_name: String(payload.groupName ?? "Otros"),
-        color: String(payload.color ?? "#CBA65B"), kind: String(payload.kind ?? "variable"),
-        budget: Number(payload.budget) || 0, archived: false,
-      });
-    } else if (action === "update_category") {
-      const categoryId = String(payload.id ?? "");
-      const category = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.categories, rowId: categoryId });
-      if (category.user_id !== user.id) return Response.json({ error: "La categoría no existe." }, { status: 404 });
-      const color = String(payload.color ?? "");
-      const kind = String(payload.kind ?? "");
-      const changes: Record<string, unknown> = { budget: Math.max(0, Number(payload.budget) || 0) };
-      const name = String(payload.name ?? "").trim();
-      const groupName = String(payload.groupName ?? "").trim();
-      if (name) changes.name = name;
-      if (groupName) changes.group_name = groupName;
-      if (/^#[0-9a-f]{6}$/i.test(color)) changes.color = color;
-      if (["fixed", "variable", "discretionary"].includes(kind)) changes.kind = kind;
-      await updateRow(tables, APPWRITE_TABLES.categories, categoryId, changes);
     } else if (action === "archive_category") {
-      const categoryId = String(payload.id ?? "");
-      const category = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.categories, rowId: categoryId });
-      if (category.user_id === user.id) await updateRow(tables, APPWRITE_TABLES.categories, categoryId, { archived: true });
+      await budgetAction(tables, user.id, { ...payload, action: "budget_remove" });
     } else if (action === "add_transaction") {
       const amount = Number(payload.amount);
       if (!Number.isFinite(amount) || !(amount > 0)) return Response.json({ error: "Ingresa un monto válido mayor a cero." }, { status: 400 });
@@ -159,6 +146,10 @@ export async function POST(request: Request) {
       if (!["income", "expense", "debt_payment"].includes(type)) return Response.json({ error: "Tipo de movimiento inválido." }, { status: 400 });
       const debtId = payload.debtId ? String(payload.debtId) : "";
       if (type === "debt_payment" && !debtId) return Response.json({ error: "Selecciona una deuda." }, { status: 400 });
+      if (payload.categoryId && type !== "debt_payment") {
+        const category = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.categories, rowId: String(payload.categoryId) });
+        if (category.user_id !== user.id || category.archived) return Response.json({ error: "La categoría no está disponible para tu cuenta." }, { status: 400 });
+      }
       const values = {
         id: id("txn"), debtId,
         date: normalizeDate(String(payload.date ?? new Date().toISOString().slice(0, 10))),
@@ -187,7 +178,13 @@ export async function POST(request: Request) {
       const date = normalizeDate(String(payload.date ?? existing.date));
       const type = String(payload.type ?? existing.type);
       if (!["income", "expense"].includes(type)) return Response.json({ error: "Tipo de movimiento inválido." }, { status: 400 });
+      if (payload.categoryId) {
+        const category = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.categories, rowId: String(payload.categoryId) });
+        if (category.user_id !== user.id || category.archived) return Response.json({ error: "La categoría no está disponible para tu cuenta." }, { status: 400 });
+      }
+      const originalCategory = row.source_category || (row.category_id ? (await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.categories, rowId: String(row.category_id) })).name : "");
       const changes = {
+        source_category: String(originalCategory), category_override: true,
         date, description: String(payload.description ?? existing.description).trim() || existing.description,
         amount, category_id: payload.categoryId ? String(payload.categoryId) : null,
         type, account: String(payload.account ?? existing.account),

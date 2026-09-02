@@ -31,7 +31,7 @@ test("successful sync opens the full ledger and a failed refresh can be retried 
   const ui = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(ui, /filterLedger\(data.transactions/);
   assert.doesNotMatch(ui, /const filtered = metrics.monthTx/);
-  assert.match(ui, /aria-label="Mes de los movimientos"/);
+  assert.match(ui, /aria-label="Periodo de los movimientos"/);
   assert.match(ui, /const refreshed = await load\(\);\s*setSyncRefreshPending\(!refreshed\);\s*showAllMovements\(\)/);
   assert.match(ui, /cache: "no-store"/);
   assert.match(ui, /onClick=\{viewSyncedMovements\}/);

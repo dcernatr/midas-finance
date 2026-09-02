@@ -361,6 +361,32 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible, [role=
 .ledger-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .ledger-summary p { margin: 0; font-size: 14px; }
 .ledger-summary span { display: block; margin-top: 4px; color: var(--muted-text); font-size: 12px; }
+.budget-workspace { width: calc(100% - 48px); max-width: 1440px; margin: 18px auto 0; }
+.period-switch { display: flex; align-items: end; justify-content: flex-end; gap: 10px; margin-bottom: 12px; }
+.period-switch label { display: grid; gap: 4px; font-size: 14px; }
+.period-switch input { min-height: 40px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-solid); color: var(--text); font: inherit; color-scheme: dark; }
+.midas-app.light .period-switch input { color-scheme: light; }
+.period-settings { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; }
+.period-settings strong { font-size: 15px; }
+.period-settings p { margin: 6px 0; color: var(--muted-text); font-size: 14px; }
+.period-settings small { color: var(--muted-text); font-size: 12px; }
+.period-actions, .payroll-candidates { display: flex; flex-wrap: wrap; gap: 8px; }
+.budget-category-cell { min-width: 220px; max-width: 320px; display: grid; gap: 5px; white-space: normal; }
+.budget-category-cell small { font-size: 12px; line-height: 1.45; color: var(--muted-text); overflow-wrap: anywhere; }
+.budget-category-cell .category-pending, .category-pending { color: var(--warning); font-size: 13px; }
+.budget-dialog { max-height: 85dvh; overflow-y: auto; background: var(--panel-solid); color: var(--text); }
+.budget-dialog[data-theme="light"] { --panel-solid: #fff; --text: #1c2329; --line: #dce1e7; --muted-text: #596474; --warning: #865a0a; --gold: #816016; color-scheme: light; }
+.budget-dialog p { font-size: 14px; line-height: 1.6; }
+.budget-form { display: grid; gap: 12px; }
+.budget-form label { display: grid; gap: 6px; font-size: 14px; }
+.budget-form input { width: 100%; min-width: 0; min-height: 42px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-solid); color: var(--text); font: inherit; }
+.budget-form input[type="color"] { width: 72px; padding: 4px; }
+.budget-group { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.5; }
+.budget-group input { margin-top: 4px; flex: none; width: 18px; height: 18px; accent-color: var(--gold); }
+.initial-plan { display: grid; gap: 8px; }
+.initial-plan > div { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.initial-plan strong { white-space: nowrap; }
+@media (max-width: 620px) { .budget-workspace { width: calc(100% - 24px); } .period-switch { justify-content: space-between; gap: 6px; } .period-switch input { width: 160px; } .period-switch button { padding-inline: 8px; } .period-actions > button { flex: 1 1 150px; } }
 .search-box { height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(127,137,147,.05); }
 .search-box svg { width: 15px; color: var(--muted-text); }
 .search-box input { width: 100%; color: var(--text); background: none; border: 0; outline: 0; font-size: 14px; }
