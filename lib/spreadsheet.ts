@@ -1,15 +1,13 @@
 import { strFromU8, unzipSync } from "fflate";
 
 export type ColumnMapping = {
-  source_id: string;
   date: string;
   description: string;
-  category?: string;
-  subcategory?: string;
-  amount: string;
-  payment_method?: string;
-  account?: string;
-  notes?: string;
+  category: string;
+  income?: string;
+  expense?: string;
+  // A single signed column can represent both income (+) and expense (-).
+  signed?: boolean;
 };
 
 export function normalizeHeader(value: string) {
@@ -188,15 +186,11 @@ export function suggestMapping(headers: string[]): Partial<ColumnMapping> {
   const normalized = new Map(headers.map(header => [normalizeHeader(header), header]));
   const find = (...candidates: string[]) => candidates.map(normalizeHeader).map(key => normalized.get(key)).find(Boolean);
   return {
-    source_id: find("ID_MOVIMIENTO", "id movimiento", "id", "transaction id"),
     date: find("Fecha", "date", "fecha movimiento"),
-    description: find("Descripción", "Descripcion", "concepto", "detalle"),
+    description: find("Nombre", "Descripción", "Descripcion", "concepto", "detalle"),
     category: find("Categoría", "Categoria", "category"),
-    subcategory: find("Subcategoría", "Subcategoria", "subcategory"),
-    amount: find("Monto", "Importe", "amount", "valor"),
-    payment_method: find("Medio_Pago", "Medio de pago", "payment method"),
-    account: find("Cuenta", "account"),
-    notes: find("Nota", "Notas", "notes", "observacion"),
+    income: find("Ingreso", "Ingresos", "income", "abono"),
+    expense: find("Gasto", "Gastos", "expense", "egreso", "Monto", "Importe", "amount", "valor"),
   };
 }
 
@@ -206,6 +200,8 @@ export function normalizeDate(value: string) {
   if (match) return validDate(Number(match[1]), Number(match[2]), Number(match[3]));
   match = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
   if (match) return validDate(Number(match[3]), Number(match[2]), Number(match[1]));
+  match = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2})$/);
+  if (match) return validDate(2000 + Number(match[3]), Number(match[2]), Number(match[1]));
   throw new Error("fecha no reconocida");
 }
 
@@ -218,7 +214,14 @@ function validDate(year: number, month: number, day: number) {
 }
 
 export function normalizeAmount(value: string) {
-  let text = value.trim().replace(/^S\/?\s*/i, "").replace(/\s/g, "");
+  const amount = parseSignedAmount(value);
+  if (amount <= 0) throw new Error("monto inválido");
+  return amount;
+}
+
+export function parseSignedAmount(value: string) {
+  let text = value.trim().replace(/S\s*\/?\s*\.?/gi, "").replace(/[\s\u00a0]/g, "").replace(/−/g, "-");
+  if (/^\(.*\)$/.test(text)) text = "-" + text.slice(1, -1);
   if (!text) throw new Error("monto vacío");
   const comma = text.lastIndexOf(",");
   const dot = text.lastIndexOf(".");
@@ -228,11 +231,64 @@ export function normalizeAmount(value: string) {
     const decimals = text.length - comma - 1;
     text = decimals === 1 || decimals === 2 ? text.replace(",", ".") : text.replace(/,/g, "");
   }
+  if (!/^[+-]?\d+(?:\.\d{1,2})?$/.test(text)) throw new Error("monto inválido");
   const amount = Number(text);
-  if (!Number.isFinite(amount) || amount <= 0) throw new Error("monto inválido");
-  return amount;
+  if (!Number.isFinite(amount)) throw new Error("monto inválido");
+  return Math.round(amount * 100) / 100;
 }
 
 export function rowObject(headers: string[], row: string[]) {
-  return Object.fromEntries(headers.map((header, index) => [header, row[index]?.trim() ?? ""]));
+  return Object.fromEntries(headers.flatMap((header, index) => header ? [[header, row[index]?.trim() ?? ""]] : []));
+}
+
+export function sheetHeaders(row: string[]) {
+  const used = new Set<string>();
+  return row.map(value => {
+    const name = value.trim();
+    if (!name) return "";
+    let label = name;
+    let index = 2;
+    while (used.has(label)) label = `${name} (${index++})`;
+    used.add(label);
+    return label;
+  });
+}
+
+export function validateMapping(value: unknown, headers?: string[]): ColumnMapping {
+  if (!value || typeof value !== "object") throw new Error("Configura el mapeo de columnas.");
+  const input = value as Record<string, unknown>;
+  const mapping = Object.fromEntries(["date", "description", "category", "income", "expense"].flatMap(key =>
+    typeof input[key] === "string" && input[key] ? [[key, input[key]]] : [],
+  )) as Partial<ColumnMapping>;
+  if (!mapping.date || !mapping.description || !mapping.category || (!mapping.income && !mapping.expense)) {
+    throw new Error("Asigna Fecha, Nombre, Categoría y al menos Ingreso o Gasto. MIDAS genera el código.");
+  }
+  const columns = Object.values(mapping) as string[];
+  if (new Set(columns).size !== columns.length) throw new Error("Cada campo debe usar una columna distinta.");
+  if (headers && columns.some(column => !headers.includes(column))) throw new Error("La estructura cambió. Revisa el mapeo de columnas.");
+  if (input.signed === true && Boolean(mapping.income) === Boolean(mapping.expense)) throw new Error("Para importes con signo selecciona una sola columna de importes.");
+  return { ...mapping, signed: input.signed === true } as ColumnMapping;
+}
+
+export function parseMappedRow(object: Record<string, string>, mapping: ColumnMapping) {
+  const date = normalizeDate(object[mapping.date] ?? "");
+  const description = object[mapping.description]?.trim();
+  const category = object[mapping.category]?.trim();
+  if (!description || description.length > 255) throw new Error("nombre vacío o demasiado largo");
+  if (!category || category.length > 128) throw new Error("categoría vacía o demasiado larga");
+  const amountAt = (column?: string) => {
+    const value = column ? object[column]?.trim() : "";
+    return !value || value === "—" || value === "-" ? 0 : parseSignedAmount(value);
+  };
+  const income = amountAt(mapping.income);
+  const expense = amountAt(mapping.expense);
+  if (mapping.signed) {
+    const signed = mapping.income ? income : expense;
+    if (!signed) throw new Error("ingreso y gasto vacíos o en cero");
+    return { date, description, category, amount: Math.abs(signed), type: signed > 0 ? "income" as const : "expense" as const };
+  }
+  if (income && expense) throw new Error("la fila tiene ingreso y gasto; usa una fila para cada movimiento");
+  if (!income && !expense) throw new Error("ingreso y gasto vacíos o en cero");
+  if (income < 0) throw new Error("el ingreso no puede ser negativo; revisa el modo de importes con signo");
+  return { date, description, category, amount: Math.abs(income || expense), type: income ? "income" as const : "expense" as const };
 }
