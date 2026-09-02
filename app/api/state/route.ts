@@ -136,7 +136,14 @@ export async function POST(request: Request) {
     } else if (action === "set_month") {
       await ensureBaseState(tables, user.id, monthKey);
       const month = await findRow(tables, APPWRITE_TABLES.months, [Query.equal("user_id", user.id), Query.equal("month_key", monthKey)]);
-      if (month) await updateRow(tables, APPWRITE_TABLES.months, month.$id, { income: Number(payload.income) || 0, savings_target: Number(payload.savingsTarget) || 0 });
+      const fields: Record<string, number> = {};
+      for (const [input, column] of [["income", "income"], ["savingsTarget", "savings_target"]]) {
+        if (payload[input] === undefined) continue;
+        const value = Number(payload[input]);
+        if (payload[input] === "" || payload[input] === null || !Number.isFinite(value) || value < 0) throw new Error("Indica un importe válido mayor o igual a cero.");
+        fields[column] = Math.round(value * 100) / 100;
+      }
+      if (month && Object.keys(fields).length) await updateRow(tables, APPWRITE_TABLES.months, month.$id, fields);
     } else if (action === "archive_category") {
       await budgetAction(tables, user.id, { ...payload, action: "budget_remove" });
     } else if (action === "add_transaction") {

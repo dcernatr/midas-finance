@@ -39,14 +39,14 @@ export async function budgetAction(tables: TablesDB, userId: string, payload: Re
         if (row.user_id !== userId || row.archived) throw new Error("Selecciona una categoría activa de tu cuenta.");
         return row;
       };
-      const ensureCategory = async (name: string, color: string) => {
+      const ensureCategory = async (name: string, color: string, preserveColor = false) => {
         name = name.trim();
         if (!name || name.length > 128 || !/^#[0-9a-f]{6}$/i.test(color)) throw new Error("Completa nombre y color válidos.");
         const equivalent = categories.find(c => categoryKey(c.name) === categoryKey(name));
         if (equivalent) {
           if (equivalent.archived) throw new Error("Ya existe una categoría archivada con ese nombre. Elige una categoría activa.");
           await ownedCategory(equivalent.id);
-          await updateRow(tables, APPWRITE_TABLES.categories, equivalent.id, { color }, tx.$id);
+          if (!preserveColor) await updateRow(tables, APPWRITE_TABLES.categories, equivalent.id, { color }, tx.$id);
           return equivalent.id;
         }
         const id = `cat_${digest(userId + ":plan:" + categoryKey(name))}`;
@@ -64,14 +64,11 @@ export async function budgetAction(tables: TablesDB, userId: string, payload: Re
       } else if (action === "budget_initial") {
         if (key !== "2026-09") throw new Error("El presupuesto inicial corresponde a septiembre de 2026.");
         if (!profile.initialApplied) {
-          const initialIds = new Set<string>();
           for (const item of INITIAL_PLAN) {
-            const id = await ensureCategory(item.name, item.color);
-            initialIds.add(id);
+            const id = await ensureCategory(item.name, item.color, true);
             if (Object.hasOwn(plan(), id) && plan()[id] !== item.budget) throw new Error(`Ya hay un presupuesto distinto para ${item.name}. Revísalo antes de aplicar el inicial.`);
             plan()[id] = item.budget;
           }
-          if (Object.keys(plan()).some(id => !initialIds.has(id))) throw new Error("El periodo ya incluye otras categorías programadas. Revísalas para aplicar el plan inicial sin sobrescribirlas.");
           if (profile.starts[key] && profile.starts[key] !== "2026-08-28") throw new Error("Septiembre ya tiene otra fecha de inicio. Revísala antes de aplicar el inicial.");
           confirmPeriod(profile, key, "2026-08-28");
           profile.initialApplied = true;

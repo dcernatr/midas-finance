@@ -68,8 +68,10 @@ test("detects spreadsheet tabs automatically and renders a dropdown", async () =
 
 test("uses the five requested effective-expense fields", async () => {
   const source = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const ledger = await readFile(new URL("../components/expense-ledger.tsx", import.meta.url), "utf8");
+  assert.match(source, /<ExpenseLedger /);
   for (const field of ["Fecha", "Nombre", "Ingreso", "Gasto", "Categoría"]) {
-    assert.match(source, new RegExp(`<TableHead[^>]*>${field}<`));
+    assert.match(ledger, new RegExp(`<th[^>]*>${field}<`));
   }
   assert.match(source, /\["fecha", "nombre", "ingreso", "gasto", "categoria"\]/);
   assert.match(source, /categoryId: quick\.type === "debt_payment" \? null : quick\.categoryId/);

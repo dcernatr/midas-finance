@@ -66,6 +66,10 @@ class MemoryTables {
     this.transactions.set($id, { rows: structuredClone(this.rows), revision: this.revision });
     return { $id };
   }
+  async deleteRow({ tableId, rowId, transactionId }) {
+    this.store(transactionId).delete(this.key(tableId, rowId));
+    if (!transactionId) this.revision++;
+  }
   async incrementRowColumn({ column, value, ...args }) {
     const row = await this.getRow(args);
     return this.updateRow({ ...args, data: { [column]: row[column] + value } });
@@ -451,5 +455,60 @@ test("simultaneous budget updates retry profile conflicts without losing either 
     const profile = await loadBudgetProfile(fixture.tables, "u1", []);
     assert.equal(Object.keys(profile.budgets["2026-09"]).length, 2);
     assert.equal(fixture.tables.transactions.size, 0);
+  } finally { fixture.restore(); }
+});
+
+test("initial plan fills missing categories but preserves existing colors, extra budgets and other users", async () => {
+  const fixture = await syncFixture(1);
+  const { budgetAction, loadBudgetProfile } = await import("../lib/budget-store.ts");
+  const { mapCategory } = await import("../lib/midas-data.ts");
+  try {
+    await budgetAction(fixture.tables, "u1", { action: "budget_category", monthKey: "2026-09", name: "Alimentación", budget: 1000, color: "#123456" });
+    await budgetAction(fixture.tables, "u1", { action: "budget_category", monthKey: "2026-09", name: "Reserva existente", budget: 50, color: "#123456" });
+    await budgetAction(fixture.tables, "u2", { action: "budget_category", monthKey: "2026-09", name: "Privada", budget: 77, color: "#123456" });
+    const otherBefore = await loadBudgetProfile(fixture.tables, "u2", []);
+    await budgetAction(fixture.tables, "u1", { action: "budget_initial", monthKey: "2026-09" });
+    const cats = (await fixture.tables.listRows({ tableId: T.categories })).rows.filter(c => c.user_id === "u1").map(mapCategory);
+    assert.equal(cats.length, 10);
+    assert.equal(cats.find(c => c.name === "Alimentación").color, "#123456");
+    const p = await loadBudgetProfile(fixture.tables, "u1", cats);
+    assert.equal(Object.values(p.budgets["2026-09"]).reduce((a, b) => a + b, 0), 13580);
+    assert.deepEqual(await loadBudgetProfile(fixture.tables, "u2", []), otherBefore);
+  } finally { fixture.restore(); }
+});
+
+test("state endpoint keeps Dashboard in sync after plan, import, recategorization, manual edit and deletion", async () => {
+  const fixture = await syncFixture(3);
+  const { GET, POST } = await import("../app/api/state/route.ts");
+  const { financeMetrics } = await import("../lib/finance-metrics.ts");
+  const post = async payload => { const r = await POST(new Request("https://midas.test/api/state", { method: "POST", body: JSON.stringify({ monthKey: "2026-09", ...payload }) })); const b = await r.json(); assert.equal(r.status, 200, JSON.stringify(b)); return b; };
+  const get = async () => (await GET(new Request("https://midas.test/api/state?month=2026-09"))).json();
+  const metrics = s => financeMetrics(s, "2026-09-02");
+  try {
+    let s = await post({ action: "budget_initial" });
+    assert.equal(metrics(s).budget, 13530); assert.equal(s.budgetProfile.initialApplied, true);
+    const food = s.categories.find(c => c.name === "Alimentación");
+    await post({ action: "set_month", income: 5000 });
+    s = await post({ action: "set_month", savingsTarget: 200 });
+    assert.equal(s.month.income, 5000); assert.equal(s.month.savingsTarget, 200);
+    assert.equal(metrics(s).actualIncome, 0);
+    await fixture.sync("dashboard-new");
+    s = await get();
+    const before = metrics(s);
+    const tx = s.transactions.find(t => t.type === "expense");
+    s = await post({ action: "budget_link", transactionId: tx.id, categoryId: food.id, applyGroup: true });
+    assert.equal(metrics(s).outflow, before.outflow);
+    assert.equal(metrics(s).pendingAmount, 0);
+    assert.equal(metrics(s).categoryRows.find(c => c.id === food.id).actual, before.spent);
+    s = await post({ action: "add_transaction", date: "2026-08-28", amount: 7.55, description: "Manual", categoryId: food.id, type: "expense" });
+    const manual = s.transactions.find(t => t.description === "Manual");
+    assert.equal(metrics(s).spent, before.spent + 7.55);
+    s = await post({ action: "update_transaction", id: manual.id, date: manual.date, amount: 9.99, description: "Manual editado", categoryId: food.id, type: "expense" });
+    assert.equal(metrics(s).spent, Math.round((before.spent + 9.99) * 100) / 100);
+    s = await post({ action: "delete_transaction", id: manual.id });
+    assert.equal(metrics(s).spent, before.spent);
+    assert.equal(metrics(await get()).spent, before.spent);
+    assert.equal((await fixture.sync("dashboard-repeat")).body.ignored, 3);
+    assert.equal(metrics(await get()).spent, before.spent);
   } finally { fixture.restore(); }
 });
