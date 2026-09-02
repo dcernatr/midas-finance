@@ -4,11 +4,13 @@ import {
 } from "../../../lib/appwrite/server";
 import { mapCategory, mapSource, mapSyncLog } from "../../../lib/midas-data";
 import {
-  fetchSpreadsheet, rowObject, suggestMapping, sheetHeaders, validateMapping, parseMappedRow, parseSignedAmount,
+  fetchSpreadsheet, rowObject, suggestMapping, sheetHeaders, validateMapping, parseMappedRow,
   fetchSpreadsheetSheets, withSpreadsheetSheet,
 } from "../../../lib/spreadsheet";
 import { digest, importIdentity, movementFingerprint, nextOccurrence, normalizedText, sourceScope } from "../../../lib/ledger";
 import { withMovementCode } from "../../../lib/ledger-store";
+import { openSyncRun, checkpointSync, syncSummary, SyncRestartError, SYNC_BATCH_SIZE } from "../../../lib/sync-progress";
+import { isProtocolError, safeApiError } from "../../../lib/api-response";
 
 function id(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 35 - prefix.length)}`;
@@ -33,6 +35,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const requestStarted = Date.now();
   try {
     const { user, tables } = await ensureContext();
     const payload = await request.json() as Record<string, unknown>;
@@ -55,12 +58,6 @@ export async function POST(request: Request) {
       const allHeaders = sheetHeaders(result.rows[0]);
       const headers = allHeaders.filter(Boolean);
       const suggestedMapping = suggestMapping(headers);
-      const amountColumn = suggestedMapping.income || suggestedMapping.expense;
-      if (amountColumn && !(suggestedMapping.income && suggestedMapping.expense)) {
-        suggestedMapping.signed = result.rows.slice(1).some(row => {
-          try { return parseSignedAmount(rowObject(allHeaders, row)[amountColumn] || "") < 0; } catch { return false; }
-        });
-      }
       return Response.json({
         sourceName: `${sourceLabel(rawUrl)} · ${sheetName}`, sheetName, headers,
         preview: result.rows.slice(1, 6).map(row => rowObject(allHeaders, row)),
@@ -101,20 +98,25 @@ export async function POST(request: Request) {
       const sourceRow = await findRow(tables, APPWRITE_TABLES.sources, [Query.equal("user_id", user.id)]);
       if (!sourceRow) return Response.json({ error: "Configura primero una fuente Spreadsheet." }, { status: 400 });
       const source = mapSource(sourceRow);
-      const startedAt = new Date().toISOString();
       const result = await fetchSpreadsheet(source.sourceUrl);
       const headers = sheetHeaders(result.rows[0]);
       let mapping;
       try { mapping = validateMapping(JSON.parse(source.columnMapping), headers); }
       catch { return Response.json({ error: "Actualiza el mapeo: Fecha, Nombre, Ingreso, Gasto y Categoría. MIDAS ya no requiere IDs de la hoja.", remapRequired: true }, { status: 409 }); }
       const scope = sourceScope(source.sourceUrl);
+      const snapshot = digest(JSON.stringify([source.sourceUrl, mapping, result.rows]));
+      const run = await openSyncRun(tables, user.id, source.id, String(payload.requestId || crypto.randomUUID()), snapshot, result.rows.length - 1);
+      if (run.progress.cursor > run.progress.total && run.row.status !== "running") return Response.json(syncSummary(run));
+      const startedAt = String(run.row.sync_started_at);
 
-      const categoryRows = (await listRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", user.id)])).map(mapCategory);
-      const categoryMap = new Map(categoryRows.map(category => [normalizedText(category.name), category.id]));
-      const existingRows = await listAllRows(tables, APPWRITE_TABLES.transactions, [
-        Query.equal("user_id", user.id), Query.equal("source_type", "spreadsheet"),
+      const [rawCategories, existingRows] = await Promise.all([
+        listRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", user.id)]),
+        listAllRows(tables, APPWRITE_TABLES.transactions, [Query.equal("user_id", user.id), Query.equal("source_type", "spreadsheet")]),
       ]);
+      const categoryRows = rawCategories.map(mapCategory);
+      const categoryMap = new Map(categoryRows.map(category => [normalizedText(category.name), category.id]));
       const existingIds = new Set(existingRows.map(row => String(row.source_id ?? "")).filter(Boolean));
+      const insertedInThisRun = new Set(existingRows.filter(row => row.source_imported_at === startedAt).map(row => String(row.source_id)));
       // Legacy records had no workbook/tab key. Only match an explicitly named
       // identical source, never manual entries or rows from other tabs.
       const legacy = new Map<string, typeof existingRows>();
@@ -132,9 +134,17 @@ export async function POST(request: Request) {
       let inserted = 0;
       let ignored = 0;
       const errors: Array<{ row: number; reason: string }> = [];
+      let cursor = run.progress.cursor;
+      const end = Math.min(result.rows.length, cursor + SYNC_BATCH_SIZE);
 
-      for (let index = 1; index < result.rows.length; index++) {
+      for (let index = 1; index < end; index++) {
         const object = rowObject(headers, result.rows[index]);
+        if (index < run.progress.cursor) {
+          try { nextOccurrence(occurrences, movementFingerprint(parseMappedRow(object, mapping))); } catch { /* Invalid rows have no identity. */ }
+          continue;
+        }
+        if (index > run.progress.cursor && Date.now() - requestStarted > 10000) break;
+        cursor = index + 1;
         const mappedColumns = [mapping.date, mapping.description, mapping.category, mapping.income, mapping.expense].filter(Boolean) as string[];
         if (!mappedColumns.some(column => object[column]?.trim())) continue;
         if (object[mapping.date] === mapping.date && object[mapping.description] === mapping.description) continue;
@@ -143,7 +153,7 @@ export async function POST(request: Request) {
           const movement = parseMappedRow(object, mapping);
           const fingerprint = movementFingerprint(movement);
           const identity = importIdentity(user.id, scope, fingerprint, nextOccurrence(occurrences, fingerprint));
-          if (existingIds.has(identity.sourceId)) { ignored++; continue; }
+          if (existingIds.has(identity.sourceId)) { if (insertedInThisRun.has(identity.sourceId)) inserted++; else ignored++; continue; }
           const prior = legacy.get(fingerprint)?.shift();
           if (prior) {
             await updateRow(tables, APPWRITE_TABLES.transactions, prior.$id, { source_id: identity.sourceId });
@@ -162,42 +172,31 @@ export async function POST(request: Request) {
             await withMovementCode(tables, user.id, movement.date, movement.type, (code, transactionId) => createRow(tables, APPWRITE_TABLES.transactions, identity.rowId, {
               user_id: user.id, date: movement.date, description: movement.description, amount: movement.amount,
               category_id: categoryMap.get(categoryName), type: movement.type, account: "Spreadsheet", midas_code: code,
-              source_type: "spreadsheet", source_id: identity.sourceId, source_name: source.sourceName, source_imported_at: new Date().toISOString(),
+              source_type: "spreadsheet", source_id: identity.sourceId, source_name: source.sourceName, source_imported_at: startedAt,
             }, transactionId));
             inserted++;
           } catch (error) {
             if (!(error && typeof error === "object" && "code" in error && error.code === 409)) throw error;
             const concurrent = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.transactions, rowId: identity.rowId });
             if (concurrent.user_id !== user.id || concurrent.source_id !== identity.sourceId) throw error;
-            ignored++;
+            if (concurrent.source_imported_at === startedAt) inserted++; else ignored++;
           }
           existingIds.add(identity.sourceId);
         } catch (error) {
-          errors.push({ row: index + 1, reason: error instanceof Error ? error.message : "fila inválida" });
+          if (error instanceof Error && isProtocolError(error.message)) throw error;
+          const code = error && typeof error === "object" && "code" in error ? Number(error.code) : 0;
+          if ([401, 403, 429, 500, 502, 503, 504].includes(code)) throw error;
+          errors.push({ row: index + 1, reason: error instanceof Error ? safeApiError(error.message) : "fila inválida" });
         }
       }
 
-      const completedAt = new Date().toISOString();
-      const status = errors.length ? (inserted ? "partial" : "failed") : "success";
-      const currentSource = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.sources, rowId: source.id });
-      if (currentSource.source_url === source.sourceUrl && currentSource.column_mapping === source.columnMapping) await updateRow(tables, APPWRITE_TABLES.sources, source.id, {
-        last_sync_at: completedAt, last_sync_status: status, last_rows_detected: detected,
-        last_rows_inserted: inserted, last_rows_ignored: ignored, last_rows_failed: errors.length, updated_at: completedAt,
-      });
-      await createRow(tables, APPWRITE_TABLES.syncLogs, id("sync"), {
-        source_id: source.id, user_id: user.id, sync_started_at: startedAt, sync_completed_at: completedAt,
-        rows_detected: detected, rows_inserted: inserted, rows_ignored: ignored,
-        rows_failed: errors.length, status, errors: JSON.stringify(errors.slice(0, 50)),
-      });
-      await createRow(tables, APPWRITE_TABLES.activity, newLogId(), {
-        user_id: user.id, target_user_id: user.id, action: "spreadsheet_sync", status,
-        metadata: JSON.stringify({ detected, inserted, ignored, failed: errors.length }),
-      });
-      return Response.json({ detected, inserted, ignored, failed: errors.length, errors: errors.slice(0, 12), status, completedAt });
+      const checkpoint = await checkpointSync(tables, run, { cursor, detected, inserted, ignored, failed: errors.length, errors }, source);
+      return Response.json(syncSummary(checkpoint));
     }
 
     return Response.json({ error: "Acción no reconocida." }, { status: 400 });
   } catch (error) {
+    if (error instanceof SyncRestartError) return Response.json({ error: error.message, restartRequired: true }, { status: 409 });
     return authErrorResponse(error);
   }
 }

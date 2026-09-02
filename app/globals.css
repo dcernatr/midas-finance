@@ -497,8 +497,6 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible, [role=
 .mapping-explainer { margin: 0; font-size: 13px; line-height: 1.65; color: var(--muted-text); }
 .mapping-explainer strong { color: var(--gold); white-space: nowrap; }
 .mapping-validation { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--gold-soft); color: var(--gold); font-size: 13px; line-height: 1.5; }
-.mapping-sign-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; line-height: 1.5; }
-.mapping-sign-option input { width: 18px; height: 18px; margin-top: 2px; flex: none; accent-color: var(--gold); }
 .transaction-origin { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .transaction-code { color: var(--gold); font: 600 11px/1.5 ui-monospace, monospace; white-space: nowrap; }
 [data-slot="select-content"] { z-index: 80; border: 1px solid var(--border); background: var(--popover); color: var(--popover-foreground); max-height: min(320px, var(--radix-select-content-available-height, 60vh)); box-shadow: 0 12px 35px #0006; }

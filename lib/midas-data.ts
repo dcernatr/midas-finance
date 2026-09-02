@@ -146,7 +146,9 @@ export function mapSource(row: DbRow): SpreadsheetSourceRow {
 }
 
 export function mapSyncLog(row: DbRow): SpreadsheetSyncLogRow {
-  return { id: text(row, "id"), sourceId: text(row, "source_id"), userKey: text(row, "user_id"), syncStartedAt: text(row, "sync_started_at"), syncCompletedAt: text(row, "sync_completed_at"), rowsDetected: number(row, "rows_detected"), rowsInserted: number(row, "rows_inserted"), rowsIgnored: number(row, "rows_ignored"), rowsFailed: number(row, "rows_failed"), status: text(row, "status"), errors: text(row, "errors"), createdAt: text(row, "created_at") };
+  let errors = text(row, "errors");
+  try { const parsed = JSON.parse(errors); if (parsed?.version === 1 && Array.isArray(parsed.errors)) errors = JSON.stringify(parsed.errors); } catch { /* Legacy log format is preserved. */ }
+  return { id: text(row, "id"), sourceId: text(row, "source_id"), userKey: text(row, "user_id"), syncStartedAt: text(row, "sync_started_at"), syncCompletedAt: text(row, "sync_completed_at"), rowsDetected: number(row, "rows_detected"), rowsInserted: number(row, "rows_inserted"), rowsIgnored: number(row, "rows_ignored"), rowsFailed: number(row, "rows_failed"), status: text(row, "status"), errors, createdAt: text(row, "created_at") };
 }
 
 export function mapActivity(row: DbRow): ActivityLogRow {

@@ -28,6 +28,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { MidasCatIcon } from "@/components/midas-cat-icon";
 import { SpreadsheetMapping } from "@/components/spreadsheet-mapping";
 import type { ColumnMapping } from "@/lib/spreadsheet";
+import { ApiResponseError, readApiResponse, spreadsheetRequest } from "@/lib/api-response";
 
 type Month = { id: string; monthKey: string; income: number; savingsTarget: number; status: string };
 type Category = { id: string; name: string; groupName: string; budget: number; color: string; kind: string; archived: boolean };
@@ -38,7 +39,7 @@ type CurrentUser = { email: string; displayName: string | null; role: string; st
 type FinanceState = { month: Month; categories: Category[]; transactions: Transaction[]; debts: Debt[]; spreadsheetSource: SpreadsheetSource | null; currentUser: CurrentUser };
 type SheetMapping = Partial<ColumnMapping>;
 type SheetPreview = { sourceName: string; sheetName: string; headers: string[]; preview: Array<Record<string, string>>; suggestedMapping: SheetMapping };
-type SyncResult = { detected: number; inserted: number; ignored: number; failed: number; errors: Array<{ row: number; reason: string }>; status: string; completedAt: string };
+type SyncResult = { detected: number; inserted: number; ignored: number; failed: number; errors: Array<{ row: number; reason: string }>; status: string; completedAt: string; done: boolean; processed: number; total: number };
 type CategoryMetric = Category & { actual: number; available: number; percent: number; status: { label: string; tone: string } };
 type Metrics = {
   monthTx: Transaction[]; actualIncome: number; spent: number; debtPaid: number;
@@ -75,7 +76,7 @@ function expenseStatus(percent: number) {
 }
 
 function redirectIfUnauthorized(response: Response) {
-  if (response.status !== 401) return false;
+  if (response.status !== 401 && !(response.redirected && new URL(response.url).pathname === "/login")) return false;
   window.location.assign("/login");
   return true;
 }
@@ -126,6 +127,9 @@ export default function Home() {
   const [sheetMapping, setSheetMapping] = useState<SheetMapping>({});
   const [sheetLoading, setSheetLoading] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [syncProgress, setSyncProgress] = useState<SyncResult | null>(null);
+  const syncRequestId = useRef<string | null>(null);
+  const syncBusy = useRef(false);
   const [changingSource, setChangingSource] = useState(false);
   const [helpSearch, setHelpSearch] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
@@ -135,7 +139,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/state?month=" + monthKey);
       if (redirectIfUnauthorized(response)) return;
-      const result = await response.json();
+      const result = await readApiResponse<FinanceState>(response);
       if (!response.ok) throw new Error(result.error || "No se pudo cargar MIDAS.");
       setData(result);
     } catch (cause) {
@@ -161,20 +165,13 @@ export default function Home() {
       setSheetLoading(true);
       setError("");
       try {
-        const response = await fetch("/api/spreadsheet", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "list_sheets", url: rawUrl }),
-          signal: controller.signal,
-        });
-        if (redirectIfUnauthorized(response)) return;
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "No se pudieron detectar las pestañas.");
+        const result = await spreadsheetRequest<{ sheets: string[] }>({ action: "list_sheets", url: rawUrl }, controller.signal);
         const names = Array.isArray(result.sheets) ? result.sheets.map(String) : [];
         if (!names.length) throw new Error("El Spreadsheet no tiene pestañas visibles.");
         setSheetNames(names);
         setSheetName(names[0]);
       } catch (cause) {
+        if (cause instanceof ApiResponseError && cause.status === 401) { window.location.assign("/login"); return; }
         if (cause instanceof DOMException && cause.name === "AbortError") return;
         setError(cause instanceof Error ? cause.message : "No se pudieron detectar las pestañas.");
       } finally {
@@ -197,7 +194,7 @@ export default function Home() {
         body: JSON.stringify({ ...payload, monthKey }),
       });
       if (redirectIfUnauthorized(response)) return false;
-      const result = await response.json();
+      const result = await readApiResponse<FinanceState>(response);
       if (!response.ok) throw new Error(result.error || "No se pudo guardar.");
       setData(result);
       if (success) {
@@ -434,18 +431,12 @@ export default function Home() {
     setSheetLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/spreadsheet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "preview", url: sheetUrl, sheetName }),
-      });
-      if (redirectIfUnauthorized(response)) return;
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "No se pudo validar la hoja.");
+      const result = await spreadsheetRequest<SheetPreview>({ action: "preview", url: sheetUrl, sheetName });
       setSheetPreview(result);
       setSheetMapping(result.suggestedMapping || {});
       setSheetStep("mapping");
     } catch (cause) {
+      if (cause instanceof ApiResponseError && cause.status === 401) { window.location.assign("/login"); return; }
       setError(cause instanceof Error ? cause.message : "No se pudo validar la hoja.");
     } finally {
       setSheetLoading(false);
@@ -457,19 +448,15 @@ export default function Home() {
     setSheetLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/spreadsheet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save_source", url: sheetUrl, sheetName, sourceName: sheetPreview.sourceName, mapping: sheetMapping }),
-      });
-      if (redirectIfUnauthorized(response)) return;
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "No se pudo guardar la fuente.");
+      await spreadsheetRequest({ action: "save_source", url: sheetUrl, sheetName, sourceName: sheetPreview.sourceName, mapping: sheetMapping });
+      syncRequestId.current = null;
+      setSyncProgress(null);
       await load();
       setNotice(changingSource ? "Fuente Spreadsheet actualizada" : "Spreadsheet conectado");
       setChangingSource(false);
       setSheetStep("status");
     } catch (cause) {
+      if (cause instanceof ApiResponseError && cause.status === 401) { window.location.assign("/login"); return; }
       setError(cause instanceof Error ? cause.message : "No se pudo guardar la fuente.");
     } finally {
       setSheetLoading(false);
@@ -477,24 +464,37 @@ export default function Home() {
   }
 
   async function synchronizeSpreadsheet() {
+    if (syncBusy.current) return;
+    syncBusy.current = true;
+    if (!syncRequestId.current) {
+      syncRequestId.current = crypto.randomUUID();
+      setSyncProgress(null);
+    }
     setSheetLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/spreadsheet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "sync" }),
-      });
-      if (redirectIfUnauthorized(response)) return;
-      const result = await response.json();
-      if (!response.ok) { if (result.remapRequired) setSheetStep("url"); throw new Error(result.error || "No se pudo sincronizar."); }
+      let result: SyncResult;
+      do {
+        result = await spreadsheetRequest<SyncResult>({ action: "sync", requestId: syncRequestId.current });
+        if (typeof result.done !== "boolean" || !Number.isInteger(result.processed) || !Number.isInteger(result.total)) {
+          throw new Error("La respuesta de sincronización está incompleta. Recarga MIDAS antes de continuar.");
+        }
+        setSyncProgress(result);
+      } while (!result.done);
       setSyncResult(result);
+      syncRequestId.current = null;
       await load();
       setSheetStep("result");
       setNotice("Sincronización completada");
     } catch (cause) {
+      if (cause instanceof ApiResponseError) {
+        if (cause.status === 401) { window.location.assign("/login"); return; }
+        if (cause.remapRequired) setSheetStep("url");
+        if (cause.restartRequired || cause.remapRequired) { syncRequestId.current = null; setSyncProgress(null); }
+      }
       setError(cause instanceof Error ? cause.message : "No se pudo sincronizar.");
     } finally {
+      syncBusy.current = false;
       setSheetLoading(false);
     }
   }
@@ -672,15 +672,16 @@ export default function Home() {
 
       <Button className="floating-add gold-button" onClick={() => openQuick()}><Plus /><span>Movimiento</span></Button>
 
-      <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
+      <Dialog open={sheetOpen} onOpenChange={open => { if (!syncBusy.current) setSheetOpen(open); }}>
         <DialogContent className="midas-dialog spreadsheet-dialog" data-theme={theme}>
           <DialogHeader><p className="eyebrow">IMPORTAR MOVIMIENTOS</p><DialogTitle>{sheetStep === "mapping" ? "Mapear columnas" : sheetStep === "result" ? "Sincronización completada" : data.spreadsheetSource && sheetStep === "status" ? "Spreadsheet conectado" : "Obtener datos de Spreadsheet"}</DialogTitle><DialogDescription>Conecta una pestaña y añade movimientos sin reemplazar tus registros manuales.</DialogDescription></DialogHeader>
 
           {error && <p className="mapping-validation" role="alert">{error}</p>}
+          {sheetLoading && syncProgress && <p className="mapping-validation" role="status" aria-live="polite">Importando: {syncProgress.processed} de {syncProgress.total} filas revisadas · {syncProgress.inserted} movimientos nuevos guardados.</p>}
           {sheetStep === "status" && data.spreadsheetSource && <div className="sheet-status">
             <div className="sheet-source-card"><div className="integration-icon"><Database /></div><div><span>Fuente actual</span><strong>{data.spreadsheetSource.sourceName}</strong><p>Última sincronización: {data.spreadsheetSource.lastSyncAt ? formatDateTime(data.spreadsheetSource.lastSyncAt) : "pendiente"}</p></div><span className={"status-pill " + (data.spreadsheetSource.lastSyncStatus === "success" ? "success" : data.spreadsheetSource.lastSyncStatus === "partial" ? "warning" : "neutral")}><span />{data.spreadsheetSource.lastSyncStatus}</span></div>
             <div className="sync-summary"><MiniResult label="Encontrados" value={data.spreadsheetSource.lastRowsDetected} /><MiniResult label="Nuevos" value={data.spreadsheetSource.lastRowsInserted} /><MiniResult label="Ignorados" value={data.spreadsheetSource.lastRowsIgnored} /><MiniResult label="Errores" value={data.spreadsheetSource.lastRowsFailed} /></div>
-            <div className="sheet-actions"><Button variant="outline" onClick={() => { setChangingSource(true); setSheetUrl(""); setSheetNames([]); setSheetName(""); setSheetPreview(null); setSheetMapping({}); setSheetStep("url"); }}><Link2 /> Cambiar archivo o pestaña</Button><Button variant="outline" onClick={() => setSheetStep("url")}>Revisar columnas</Button><Button className="gold-button" disabled={sheetLoading} onClick={synchronizeSpreadsheet}>{sheetLoading ? <RefreshCw className="spin" /> : <RefreshCw />} {sheetLoading ? "Sincronizando…" : "Sincronizar ahora"}</Button></div>
+            <div className="sheet-actions"><Button variant="outline" disabled={sheetLoading} onClick={() => { setChangingSource(true); setSheetUrl(""); setSheetNames([]); setSheetName(""); setSheetPreview(null); setSheetMapping({}); setSheetStep("url"); }}><Link2 /> Cambiar archivo o pestaña</Button><Button variant="outline" disabled={sheetLoading} onClick={() => setSheetStep("url")}>Revisar columnas</Button><Button className="gold-button" disabled={sheetLoading} onClick={synchronizeSpreadsheet}>{sheetLoading ? <RefreshCw className="spin" /> : <RefreshCw />} {sheetLoading ? "Sincronizando…" : "Sincronizar ahora"}</Button></div>
           </div>}
 
           {sheetStep === "url" && <div className="sheet-url-step">
