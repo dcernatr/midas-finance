@@ -192,3 +192,124 @@ test("sync route preserves manual rows, skips repeat imports, and scopes duplica
     assert.equal(new Set(rows.map(row => row.midas_code)).size, 8);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+async function syncFixture(count) {
+  const { setContext } = await import("midas-test:auth");
+  const { POST } = await import("../app/api/spreadsheet/route.ts");
+  const tables = new MemoryTables();
+  setContext({ user: { id: "u1" }, tables });
+  await tables.createRow({ tableId: T.sources, rowId: "source", data: {
+    user_id: "u1", source_name: "Google Spreadsheet book · Set 26",
+    source_url: "https://docs.google.com/spreadsheets/d/book/edit?sheet=Set%2026",
+    column_mapping: JSON.stringify({ date: "Fecha", description: "Nombre", expense: "Gasto", category: "Categoria" }),
+  } });
+  const fixture = {
+    tables,
+    // Identical legitimate expense rows span multiple batches. An income is
+    // deliberately stored in Gasto and identified only by its category.
+    csv: "Fecha,Nombre,Gasto,Categoria\n" + Array.from({ length: count }, (_, i) =>
+      i === 0 ? "02/09/26,Sueldo,100,Ingreso" : "02/09/26,Compra,4,Prueba").join("\n"),
+    async sync(requestId) {
+      const response = await POST(new Request("https://midas.test/api/spreadsheet", {
+        method: "POST", body: JSON.stringify({ action: "sync", requestId }),
+      }));
+      return { status: response.status, body: await response.json() };
+    },
+    restore() { globalThis.fetch = originalFetch; },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(fixture.csv, { headers: { "content-type": "text/csv" } });
+  return fixture;
+}
+
+test("batched imports preserve repeated rows, category-derived income, manual data and cumulative progress", async () => {
+  const fixture = await syncFixture(20);
+  const { tables } = fixture;
+  try {
+    await add(tables, "manual", "manual");
+    let prior = 0, result;
+    for (let request = 0; request < 5; request++) {
+      result = await fixture.sync("batched-run");
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.ok(result.body.processed > prior);
+      assert.ok(result.body.processed - prior <= 8);
+      assert.equal(result.body.failed, 0);
+      prior = result.body.processed;
+      if (result.body.done) break;
+    }
+    assert.equal(result.body.done, true);
+    assert.equal(result.body.inserted, 20);
+    assert.equal(result.body.ignored, 0);
+    assert.equal(result.body.detected, 20);
+    const rows = (await tables.listRows({ tableId: T.transactions })).rows;
+    assert.equal(rows.length, 21);
+    assert.equal(rows.filter(row => row.source_type === "manual").length, 1);
+    const income = rows.find(row => row.description === "Sueldo");
+    assert.equal(income.type, "income");
+    assert.equal(income.midas_code, "26-09-I-001");
+    assert.equal(new Set(rows.map(row => row.midas_code)).size, 21);
+    assert.deepEqual((await fixture.sync("batched-run")).body, result.body);
+    assert.equal((await tables.listRows({ tableId: T.syncLogs })).rows.length, 1);
+    assert.equal((await tables.listRows({ tableId: T.activity })).rows.length, 1);
+    assert.equal((await tables.getRow({ tableId: T.sources, rowId: "source" })).last_rows_inserted, 20);
+  } finally { fixture.restore(); }
+});
+
+test("retry after interruption between financial writes and checkpoint preserves counts without duplication", async () => {
+  const fixture = await syncFixture(10);
+  const { tables } = fixture;
+  const update = tables.updateRow.bind(tables);
+  let fail = true;
+  tables.updateRow = args => {
+    if (args.tableId === T.syncLogs && fail) { fail = false; throw new Error("Checkpoint connection interrupted"); }
+    return update(args);
+  };
+  try {
+    assert.equal((await fixture.sync("interrupted-run")).status, 500);
+    assert.equal((await tables.listRows({ tableId: T.transactions })).rows.length, 8);
+    const retry = await fixture.sync("interrupted-run");
+    assert.equal(retry.status, 200, JSON.stringify(retry.body));
+    assert.equal(retry.body.inserted, 8);
+    assert.equal(retry.body.ignored, 0);
+    const final = await fixture.sync("interrupted-run");
+    assert.equal(final.body.done, true);
+    assert.equal(final.body.inserted, 10);
+    assert.equal((await tables.listRows({ tableId: T.transactions })).rows.length, 10);
+    assert.equal(tables.transactions.size, 0);
+  } finally { fixture.restore(); }
+});
+
+test("changing a sheet between batches requests a restart while retaining saved movements", async () => {
+  const fixture = await syncFixture(10);
+  try {
+    assert.equal((await fixture.sync("before-change")).body.inserted, 8);
+    fixture.csv += "\n02/09/26,Taxi,12,Prueba";
+    const stale = await fixture.sync("before-change");
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.restartRequired, true);
+    assert.equal((await fixture.tables.listRows({ tableId: T.transactions })).rows.length, 8);
+    let next;
+    do { next = await fixture.sync("after-change"); assert.equal(next.status, 200); } while (!next.body.done);
+    assert.equal(next.body.inserted, 3);
+    assert.equal(next.body.ignored, 8);
+    assert.equal((await fixture.tables.listRows({ tableId: T.transactions })).rows.length, 11);
+  } finally { fixture.restore(); }
+});
+
+test("overlapping retries checkpoint each batch once", async () => {
+  const fixture = await syncFixture(10);
+  try {
+    const replies = await Promise.all([fixture.sync("overlap"), fixture.sync("overlap")]);
+    for (const reply of replies) {
+      assert.equal(reply.status, 200, JSON.stringify(reply.body));
+      assert.equal(reply.body.inserted, 8);
+      assert.equal(reply.body.detected, 8);
+    }
+    const result = await fixture.sync("overlap");
+    assert.equal(result.body.done, true);
+    assert.equal(result.body.inserted, 10);
+    assert.equal((await fixture.tables.listRows({ tableId: T.transactions })).rows.length, 10);
+    assert.equal((await fixture.tables.listRows({ tableId: T.activity })).rows.length, 1);
+    assert.equal(fixture.tables.transactions.size, 0);
+  } finally { fixture.restore(); }
+});

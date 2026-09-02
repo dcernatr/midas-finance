@@ -5,6 +5,7 @@ import {
 } from "./appwrite/server";
 import { mapUser } from "./midas-data";
 import type { MidasUser } from "./midas-data";
+import { isProtocolError, safeApiError } from "./api-response";
 
 export type { MidasUser } from "./midas-data";
 
@@ -25,8 +26,9 @@ export async function ensureContext(options: { logAccess?: boolean } = {}) {
   let identity;
   try {
     identity = await sessionAccount.get();
-  } catch {
-    throw new AuthError("Tu sesión venció. Ingresa nuevamente.", 401);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && [401, 403].includes(Number(error.code))) throw new AuthError("Tu sesión venció. Ingresa nuevamente.", 401);
+    throw error;
   }
 
   const { tables } = createAdminServices();
@@ -90,6 +92,9 @@ export async function requireAdmin() {
 
 export function authErrorResponse(error: unknown) {
   if (error instanceof AuthError) return Response.json({ error: error.message }, { status: error.status });
+  if (error instanceof Error && isProtocolError(error.message)) return Response.json({ error: safeApiError(error.message), retryable: true }, { status: 503 });
+  const code = error && typeof error === "object" && "code" in error ? Number(error.code) : 0;
+  if ([408, 429, 502, 503, 504].includes(code)) return Response.json({ error: "El servicio está temporalmente ocupado. Vuelve a intentar; los movimientos guardados se conservan.", retryable: true }, { status: code });
   return Response.json({ error: error instanceof Error ? error.message : "No se pudo completar la operación." }, { status: 500 });
 }
 

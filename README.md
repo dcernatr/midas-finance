@@ -82,7 +82,9 @@ Los únicos campos que se mapean son:
 
 `Fecha | Nombre | Ingreso | Gasto | Categoría`
 
-Fecha, Nombre y Categoría son obligatorios; basta con una de las columnas Ingreso o Gasto. Cada fila debe contener un único importe no nulo. También se admite una sola columna de importes con signo, activando la opción **positivo = ingreso / negativo = gasto**. Se reconocen fechas `DD/MM/AA` e importes con `S/` o `S/.`.
+Fecha, Nombre y Categoría son obligatorios; basta con una de las columnas Ingreso o Gasto. Cada fila debe contener un único importe no nulo. Si Categoría dice **Ingreso** o **Ingresos** (sin distinguir mayúsculas ni acentos), MIDAS registra un ingreso con el valor absoluto del importe, incluso si está en Gasto. No hay selector adicional. Para las demás categorías, la columna Ingreso registra ingresos y Gasto registra gastos, independientemente del signo de este último. Se reconocen fechas `DD/MM/AA` e importes con `S/` o `S/.`.
+
+La importación se procesa por lotes de hasta ocho filas, con progreso y un punto de continuación guardado en cada lote. Ante una interrupción temporal, MIDAS reintenta con el mismo identificador y conserva los movimientos ya guardados. Si cambia la hoja o el mapeo durante el proceso, pide reiniciar sin borrar datos. Las respuestas XML/HTML de error no se interpretan como JSON ni CSV; se muestra un mensaje legible. La configuración de fuentes y los movimientos manuales no se reenvían automáticamente.
 
 No se solicita ni importa un ID de la hoja: MIDAS genera el código. Las conexiones antiguas con `ID_MOVIMIENTO` deben volver a mapear sus columnas antes de sincronizar.
 

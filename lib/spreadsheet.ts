@@ -6,8 +6,6 @@ export type ColumnMapping = {
   category: string;
   income?: string;
   expense?: string;
-  // A single signed column can represent both income (+) and expense (-).
-  signed?: boolean;
 };
 
 export function normalizeHeader(value: string) {
@@ -16,6 +14,10 @@ export function normalizeHeader(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
+}
+
+export function isIncomeCategory(value: string) {
+  return ["ingreso", "ingresos"].includes(normalizeHeader(value));
 }
 
 export function toPublishedCsvUrl(raw: string) {
@@ -102,6 +104,7 @@ export function withSpreadsheetSheet(raw: string, sheetName: string) {
 export async function fetchSpreadsheetSheets(rawUrl: string) {
   const id = spreadsheetId(rawUrl);
   const response = await fetch(`https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`, {
+    cache: "no-store",
     headers: { "User-Agent": "MIDAS/0.5 Spreadsheet Tabs" },
     signal: AbortSignal.timeout(15000),
   });
@@ -126,9 +129,11 @@ export async function fetchSpreadsheetSheets(rawUrl: string) {
 
 export async function fetchSpreadsheet(rawUrl: string) {
   const candidates = toPublishedCsvUrls(rawUrl);
+  let invalidDocument = false;
   for (const csvUrl of candidates) {
     try {
       const response = await fetch(csvUrl, {
+        cache: "no-store",
         headers: { "User-Agent": "MIDAS/0.2 Spreadsheet Import" },
         signal: AbortSignal.timeout(12000),
       });
@@ -136,7 +141,8 @@ export async function fetchSpreadsheet(rawUrl: string) {
       const contentType = response.headers.get("content-type") ?? "";
       const text = await response.text();
       if (text.length > 3_000_000) throw new Error("La hoja supera el tamaño permitido para una sincronización.");
-      if (!text.trim() || contentType.includes("text/html") || /^\s*<!doctype html/i.test(text)) continue;
+      if (!text.trim()) continue;
+      if (/(?:html|xml|json)/i.test(contentType) || /^\s*</.test(text)) { invalidDocument = true; continue; }
       const rows = parseCsv(text);
       if (!rows.length || !rows[0].some(Boolean)) continue;
       return { csvUrl, rows };
@@ -144,6 +150,7 @@ export async function fetchSpreadsheet(rawUrl: string) {
       if (error instanceof Error && error.message.includes("tamaño permitido")) throw error;
     }
   }
+  if (invalidDocument) throw new Error("Google Sheets devolvió una página de error en lugar de la tabla. Comprueba el acceso de lectura y vuelve a intentar.");
   throw new Error("MIDAS no puede acceder a esta hoja. En Google Drive selecciona Compartir → Acceso general → Cualquier persona con el enlace → Lector.");
 }
 
@@ -266,8 +273,8 @@ export function validateMapping(value: unknown, headers?: string[]): ColumnMappi
   const columns = Object.values(mapping) as string[];
   if (new Set(columns).size !== columns.length) throw new Error("Cada campo debe usar una columna distinta.");
   if (headers && columns.some(column => !headers.includes(column))) throw new Error("La estructura cambió. Revisa el mapeo de columnas.");
-  if (input.signed === true && Boolean(mapping.income) === Boolean(mapping.expense)) throw new Error("Para importes con signo selecciona una sola columna de importes.");
-  return { ...mapping, signed: input.signed === true } as ColumnMapping;
+  // Ignore the old signed-mode setting; classification no longer needs a switch.
+  return mapping as ColumnMapping;
 }
 
 export function parseMappedRow(object: Record<string, string>, mapping: ColumnMapping) {
@@ -282,13 +289,9 @@ export function parseMappedRow(object: Record<string, string>, mapping: ColumnMa
   };
   const income = amountAt(mapping.income);
   const expense = amountAt(mapping.expense);
-  if (mapping.signed) {
-    const signed = mapping.income ? income : expense;
-    if (!signed) throw new Error("ingreso y gasto vacíos o en cero");
-    return { date, description, category, amount: Math.abs(signed), type: signed > 0 ? "income" as const : "expense" as const };
-  }
   if (income && expense) throw new Error("la fila tiene ingreso y gasto; usa una fila para cada movimiento");
   if (!income && !expense) throw new Error("ingreso y gasto vacíos o en cero");
-  if (income < 0) throw new Error("el ingreso no puede ser negativo; revisa el modo de importes con signo");
+  if (isIncomeCategory(category)) return { date, description, category, amount: Math.abs(income || expense), type: "income" as const };
+  if (income < 0) throw new Error("el ingreso no puede ser negativo; revisa la categoría y el importe");
   return { date, description, category, amount: Math.abs(income || expense), type: income ? "income" as const : "expense" as const };
 }

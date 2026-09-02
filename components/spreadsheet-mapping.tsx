@@ -16,7 +16,6 @@ export function SpreadsheetMapping({ headers, preview, mapping, onChange, disabl
   let message = "";
   try { valid = validateMapping(mapping, headers); }
   catch (error) { message = error instanceof Error ? error.message : "Revisa las columnas."; }
-  const singleAmount = Boolean(mapping.income) !== Boolean(mapping.expense);
   return <>
     <p className="mapping-explainer">Asigna únicamente las columnas de tus movimientos. El código lo genera MIDAS automáticamente: <strong>26-09-G-001</strong> / <strong>26-09-I-001</strong>.</p>
     <div className="mapping-grid">
@@ -24,7 +23,6 @@ export function SpreadsheetMapping({ headers, preview, mapping, onChange, disabl
         <span><strong>{label}</strong><small>{required ? "Obligatorio" : "Al menos Ingreso o Gasto"}</small></span>
         <select aria-label={`Columna de ${label}`} value={mapping[key] || ""} disabled={disabled} onChange={event => {
           const next = { ...mapping, [key]: event.target.value || undefined };
-          if (next.income && next.expense) next.signed = false;
           onChange(next);
         }}>
           <option value="">{required ? "Selecciona una columna" : "Sin columna"}</option>
@@ -32,7 +30,7 @@ export function SpreadsheetMapping({ headers, preview, mapping, onChange, disabl
         </select>
       </label>)}
     </div>
-    {singleAmount && <label className="mapping-sign-option"><input type="checkbox" checked={mapping.signed === true} disabled={disabled} onChange={event => onChange({ ...mapping, signed: event.target.checked })} /><span>Mi columna mezcla importes con signo: <strong>positivo = ingreso</strong>, <strong>negativo = gasto</strong>.</span></label>}
+    <p className="mapping-explainer">Si Categoría dice <strong>Ingreso</strong> o <strong>Ingresos</strong>, MIDAS lo registra como ingreso automáticamente, aunque el importe esté en Gasto. No necesitas otro selector.</p>
     {message && <p className="mapping-validation" role="status">{message}</p>}
     <div className="sheet-preview-table"><span>ASÍ SE IMPORTARÁN TUS MOVIMIENTOS</span><div>
       <table><thead><tr>{["Fecha", "Nombre", "Ingreso", "Gasto", "Categoría"].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>

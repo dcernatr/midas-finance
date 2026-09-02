@@ -43,11 +43,20 @@ test("separates income and expense and rejects ambiguous or empty rows", () => {
   assert.throws(() => parseMappedRow({ ...row, Gasto: "", Ingreso: "-20" }, mapping));
 });
 
-test("explicit signed mode handles one mixed column without guessing from the name", () => {
-  const signed = validateMapping({ ...mapping, income: undefined, signed: true });
-  assert.equal(parseMappedRow(row, signed).type, "expense");
-  assert.equal(parseMappedRow({ ...row, Gasto: "S/.14,795.33" }, signed).type, "income");
-  assert.throws(() => validateMapping({ ...mapping, signed: true }));
+test("category Ingreso classifies a mixed column automatically, without a signed-mode selector", () => {
+  const single = validateMapping({ ...mapping, income: undefined, signed: true });
+  assert.equal(single.signed, undefined);
+  assert.equal(parseMappedRow(row, single).type, "expense");
+  for (const category of ["Ingreso", " ingresos ", "INGRESO", "Ingréso"]) {
+    for (const amount of ["S/.14,795.33", "-S/.14,795.33"]) {
+      const movement = parseMappedRow({ ...row, Gasto: amount, Categoría: category }, single);
+      assert.equal(movement.type, "income");
+      assert.equal(movement.amount, 14795.33);
+    }
+  }
+  assert.equal(parseMappedRow({ ...row, Gasto: "100", Categoría: "Alimentación" }, single).type, "expense");
+  assert.equal(parseMappedRow({ ...row, Gasto: "100", Categoría: "Sin ingresos" }, single).type, "expense");
+  assert.equal(parseMappedRow({ ...row, Gasto: "", Ingreso: "-100", Categoría: "Ingreso" }, mapping).type, "income");
 });
 
 test("filters empty headers while preserving positions and disambiguating repeated headers", () => {
@@ -102,4 +111,10 @@ test("manual and imported entries remain together and export generated codes and
   assert.doesNotMatch(sync, /deleteRow/);
   assert.match(ui, /t.code/);
   assert.match(ui, /"codigo", "origen", "fuente"/);
+});
+
+test("mapping has no signed-mode checkbox or classification selector", async () => {
+  const component = await readFile(new URL("../components/spreadsheet-mapping.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(component, /checkbox|mapping\.signed|next\.signed/);
+  assert.match(component.replace(/<\/?strong>/g, ""), /Ingreso o Ingresos/);
 });
