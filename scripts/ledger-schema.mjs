@@ -31,5 +31,15 @@ export async function ensureLedgerSchema(tables, databaseId) {
       });
     } catch (createError) { if (createError?.code !== 409) throw createError; }
   }
+  const required = ["user_id", "period", "kind", "last_number"];
+  let sequenceReady = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const table = await tables.getTable({ databaseId, tableId: "midas_transaction_sequences" });
+    const columns = required.map(key => table.columns?.find(column => column.key === key));
+    if (columns.some(column => column?.status === "failed")) throw new Error("No se pudo preparar la secuencia MIDAS.");
+    if (columns.every(column => column?.status === "available")) { sequenceReady = true; break; }
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  if (!sequenceReady) throw new Error("La secuencia sigue preparándose. Repite la migración antes de publicar.");
   console.log("Codificación MIDAS preparada; datos anteriores conservados.");
 }

@@ -134,7 +134,7 @@ test("schema migration is additive, idempotent and does not hide permission fail
     async getColumn() { if (!column) throw { code: 404 }; return column; },
     async createVarcharColumn(args) { column = { ...args, status: "available" }; },
     async getTable() { if (!sequence) throw { code: 404 }; return sequence; },
-    async createTable(args) { sequence = args; },
+    async createTable(args) { sequence = { ...args, columns: args.columns.map(column => ({ ...column, status: "available" })) }; },
   };
   await ensureLedgerSchema(tables, "midas");
   assert.equal(column.required, false);

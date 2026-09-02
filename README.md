@@ -56,6 +56,10 @@ MIDAS (Money Intelligence, Debt, Allocation & Spending) es un hub de control de 
 
 ### Actualización de una instalación existente (antes de desplegar)
 
+El sitio Appwrite ya vinculado a MIDAS ejecuta esta migración automáticamente mediante `prebuild`, utilizando la credencial de servidor que ya tiene configurada. Se verifica el sitio, proyecto, región y base de datos antes de acceder a los datos. Si la configuración o la migración falla, se detiene la compilación. Las compilaciones locales/CI sin `APPWRITE_SITE_ID` no modifican ninguna base. No es necesario copiar ni revelar credenciales.
+
+Referencia de las variables inyectadas por el proveedor: https://appwrite.io/docs/products/sites/environment-variables
+
 Con las variables de servidor ya configuradas para **el proyecto MIDAS**, ejecuta:
 
 ```bash
