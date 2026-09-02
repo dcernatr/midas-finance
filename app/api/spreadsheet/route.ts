@@ -59,6 +59,7 @@ export async function POST(request: Request) {
       const headers = allHeaders.filter(Boolean);
       const suggestedMapping = suggestMapping(headers);
       return Response.json({
+        scope: sourceScope(selectedUrl),
         sourceName: `${sourceLabel(rawUrl)} · ${sheetName}`, sheetName, headers,
         preview: result.rows.slice(1, 6).map(row => rowObject(allHeaders, row)),
         suggestedMapping,
@@ -122,7 +123,7 @@ export async function POST(request: Request) {
       const legacy = new Map<string, typeof existingRows>();
       for (const row of existingRows) {
         if (String(row.source_id ?? "").startsWith("v2:") || row.source_name !== source.sourceName || !source.sourceName.includes(" · ")) continue;
-        const category = categoryRows.find(item => item.id === row.category_id)?.name;
+        const category = String(row.source_category || categoryRows.find(item => item.id === row.category_id)?.name || "");
         if (!category) continue;
         const fingerprint = movementFingerprint({ date: String(row.date), description: String(row.description), amount: Number(row.amount), type: String(row.type), category });
         const group = legacy.get(fingerprint) ?? [];
@@ -171,7 +172,7 @@ export async function POST(request: Request) {
           try {
             await withMovementCode(tables, user.id, movement.date, movement.type, (code, transactionId) => createRow(tables, APPWRITE_TABLES.transactions, identity.rowId, {
               user_id: user.id, date: movement.date, description: movement.description, amount: movement.amount,
-              category_id: categoryMap.get(categoryName), type: movement.type, account: "Spreadsheet", midas_code: code,
+              category_id: categoryMap.get(categoryName), source_category: movement.category, category_override: false, type: movement.type, account: "Spreadsheet", midas_code: code,
               source_type: "spreadsheet", source_id: identity.sourceId, source_name: source.sourceName, source_imported_at: startedAt,
             }, transactionId));
             inserted++;

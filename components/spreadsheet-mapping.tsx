@@ -2,15 +2,18 @@
 
 import type { ColumnMapping } from "@/lib/spreadsheet";
 import { parseMappedRow, validateMapping } from "@/lib/spreadsheet";
+import { BudgetCategoryPicker } from "./budget-category-picker";
+import { resolveCategory, type BudgetProfile, type BudgetCategory } from "@/lib/budgeting";
 
 const fields = [
   ["date", "Fecha", true], ["description", "Nombre", true],
   ["income", "Ingreso", false], ["expense", "Gasto", false], ["category", "Categoría", true],
 ] as const;
 
-export function SpreadsheetMapping({ headers, preview, mapping, onChange, disabled = false }: {
+export function SpreadsheetMapping({ headers, preview, mapping, onChange, disabled = false, budgetContext }: {
   headers: string[]; preview: Array<Record<string, string>>; mapping: Partial<ColumnMapping>;
   onChange: (mapping: Partial<ColumnMapping>) => void; disabled?: boolean;
+  budgetContext?: { profile: BudgetProfile; categories: BudgetCategory[]; sourceUrl: string; scope: string; theme: string; error?: string; onSave: (payload: Record<string, unknown>) => Promise<boolean> };
 }) {
   let valid: ColumnMapping | undefined;
   let message = "";
@@ -38,7 +41,8 @@ export function SpreadsheetMapping({ headers, preview, mapping, onChange, disabl
           if (!valid) return <tr key={index}><td colSpan={5}>Completa el mapeo para ver esta fila.</td></tr>;
           try {
             const movement = parseMappedRow(row, valid);
-            return <tr key={index}><td>{movement.date}</td><td>{movement.description}</td><td>{movement.type === "income" ? movement.amount.toFixed(2) : "—"}</td><td>{movement.type === "expense" ? movement.amount.toFixed(2) : "—"}</td><td>{movement.category}</td></tr>;
+            const resolved = budgetContext ? resolveCategory({ ...movement, categoryId: null, sourceCategory: movement.category, sourceId: `v2:${budgetContext.scope}:` }, budgetContext.categories, budgetContext.profile) : undefined;
+            return <tr key={index}><td>{movement.date}</td><td>{movement.description}</td><td>{movement.type === "income" ? movement.amount.toFixed(2) : "—"}</td><td>{movement.type === "expense" ? movement.amount.toFixed(2) : "—"}</td><td>{budgetContext && movement.type === "expense" ? <BudgetCategoryPicker categories={budgetContext.categories} profile={budgetContext.profile} date={movement.date} original={movement.category} categoryId={resolved?.categoryId} pending={resolved?.categoryPending} sourceUrl={budgetContext.sourceUrl} sourceId={`v2:${budgetContext.scope}:`} theme={budgetContext.theme} onSave={budgetContext.onSave} error={budgetContext.error} observedAmount={movement.amount} disabled={disabled} /> : movement.category}</td></tr>;
           } catch (error) { return <tr className="preview-invalid" key={index}><td colSpan={5}>Fila {index + 2}: {error instanceof Error ? error.message : "revisa los datos"}</td></tr>; }
         })}
       </tbody></table>

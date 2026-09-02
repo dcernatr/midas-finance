@@ -47,6 +47,8 @@ export type DebtRow = {
 };
 
 export type TransactionRow = {
+  sourceCategory: string | null;
+  categoryOverride: boolean;
   id: string;
   code: string | null;
   userKey: string;
@@ -138,7 +140,7 @@ export function mapDebt(row: DbRow): DebtRow {
 }
 
 export function mapTransaction(row: DbRow): TransactionRow {
-  return { id: text(row, "id"), code: nullableText(row, "midas_code"), userKey: text(row, "user_id"), date: text(row, "date"), description: text(row, "description"), amount: number(row, "amount"), categoryId: nullableText(row, "category_id"), subcategory: nullableText(row, "subcategory"), debtId: nullableText(row, "debt_id"), type: text(row, "type"), account: text(row, "account"), paymentMethod: nullableText(row, "payment_method"), notes: nullableText(row, "notes"), sourceType: text(row, "source_type"), sourceId: nullableText(row, "source_id"), sourceName: nullableText(row, "source_name"), sourceImportedAt: nullableText(row, "source_imported_at"), createdAt: text(row, "created_at") };
+  return { sourceCategory: nullableText(row, "source_category"), categoryOverride: row.category_override === true, id: text(row, "id"), code: nullableText(row, "midas_code"), userKey: text(row, "user_id"), date: text(row, "date"), description: text(row, "description"), amount: number(row, "amount"), categoryId: nullableText(row, "category_id"), subcategory: nullableText(row, "subcategory"), debtId: nullableText(row, "debt_id"), type: text(row, "type"), account: text(row, "account"), paymentMethod: nullableText(row, "payment_method"), notes: nullableText(row, "notes"), sourceType: text(row, "source_type"), sourceId: nullableText(row, "source_id"), sourceName: nullableText(row, "source_name"), sourceImportedAt: nullableText(row, "source_imported_at"), createdAt: text(row, "created_at") };
 }
 
 export function mapSource(row: DbRow): SpreadsheetSourceRow {

@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { Client, TablesDB } from "node-appwrite";
 import { ensureLedgerSchema } from "./ledger-schema.mjs";
+import { ensureBudgetSchema } from "./budget-schema.mjs";
 
 // Only this already-linked MIDAS deployment may run the automatic migration.
 // Local and credential-free CI builds do not access a database.
@@ -20,6 +21,7 @@ export function deploymentConfig(env) {
 export async function prepareDeployment(env, migrate = async config => {
   const client = new Client().setEndpoint(config.endpoint).setProject(config.project).setKey(config.key);
   await ensureLedgerSchema(new TablesDB(client), "midas");
+  await ensureBudgetSchema(new TablesDB(client), "midas");
 }) {
   const config = deploymentConfig(env);
   if (!config) {

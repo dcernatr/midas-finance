@@ -313,3 +313,143 @@ test("overlapping retries checkpoint each batch once", async () => {
     assert.equal(fixture.tables.transactions.size, 0);
   } finally { fixture.restore(); }
 });
+
+test("August sheet imports are returned by September state and visible beside manual rows", async () => {
+  const fixture = await syncFixture(3);
+  const { GET } = await import("../app/api/state/route.ts");
+  const { filterLedger } = await import("../lib/ledger-view.ts");
+  try {
+    fixture.csv = fixture.csv.replaceAll("02/09/26", "28/08/26");
+    await add(fixture.tables, "manual-september", "manual");
+    await add(fixture.tables, "other-user", "manual", "2026-08-28", "expense", "u2");
+    const result = await fixture.sync("august-visible");
+    assert.equal(result.body.inserted, 3);
+    const response = await GET(new Request("https://midas.test/api/state?month=2026-09"));
+    const state = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(state));
+    assert.equal(state.month.monthKey, "2026-09");
+    assert.equal(state.transactions.length, 4);
+    assert.equal(state.transactions.filter(row => row.date.startsWith("2026-08")).length, 3);
+    const visible = filterLedger(state.transactions, state.categories);
+    assert.equal(visible.length, 4);
+    assert.ok(visible.some(row => row.id === "manual-september"));
+    assert.ok(!visible.some(row => row.id === "other-user"));
+    assert.equal(new Set(visible.map(row => row.code)).size, 4);
+  } finally { fixture.restore(); }
+});
+
+test("initial budgets are confirmed once, copied per period and never change earlier budgets", async () => {
+  const fixture = await syncFixture(1);
+  const { budgetAction, loadBudgetProfile } = await import("../lib/budget-store.ts");
+  const { mapCategory } = await import("../lib/midas-data.ts");
+  const { planFor } = await import("../lib/budgeting.ts");
+  try {
+    const act = payload => budgetAction(fixture.tables, "u1", { monthKey: "2026-09", ...payload });
+    await act({ action: "budget_initial" });
+    await act({ action: "budget_initial" });
+    const cats = (await fixture.tables.listRows({ tableId: T.categories })).rows.map(mapCategory);
+    assert.equal(cats.length, 9);
+    let p = await loadBudgetProfile(fixture.tables, "u1", cats);
+    assert.equal(p.starts["2026-09"], "2026-08-28");
+    assert.equal(Object.values(planFor(p, "2026-09")).reduce((a, b) => a + b, 0), 13530);
+    assert.deepEqual(planFor(p, "2026-10"), {});
+    assert.equal((await fixture.tables.listRows({ tableId: T.debts })).rows.length, 0);
+    assert.equal((await fixture.tables.listRows({ tableId: T.transactions })).rows.length, 0);
+    await act({ action: "budget_copy", monthKey: "2026-10" });
+    const food = cats.find(c => c.name === "Alimentación");
+    await act({ action: "budget_category", monthKey: "2026-10", id: food.id, budget: 2000 });
+    p = await loadBudgetProfile(fixture.tables, "u1", cats);
+    assert.equal(planFor(p, "2026-09")[food.id], 1000);
+    assert.equal(planFor(p, "2026-10")[food.id], 2000);
+    await assert.rejects(act({ action: "budget_copy", monthKey: "2026-10" }), /no se sobrescribirá/i);
+    await act({ action: "budget_remove", monthKey: "2026-10", id: food.id });
+    p = await loadBudgetProfile(fixture.tables, "u1", cats);
+    assert.equal(planFor(p, "2026-10")[food.id], undefined);
+    assert.equal(planFor(p, "2026-09")[food.id], 1000);
+    assert.equal((await fixture.tables.getRow({ tableId: T.categories, rowId: food.id })).archived, false);
+  } finally { fixture.restore(); }
+});
+
+test("category linking preserves imported identity, applies only within a tab and resolves future imports", async () => {
+  const fixture = await syncFixture(3);
+  const { budgetAction } = await import("../lib/budget-store.ts");
+  const { GET } = await import("../app/api/state/route.ts");
+  const state = async () => { const response = await GET(new Request("https://midas.test/api/state?month=2026-09")); assert.equal(response.status, 200); return response.json(); };
+  try {
+    await budgetAction(fixture.tables, "u1", { action: "budget_initial", monthKey: "2026-09" });
+    fixture.csv = fixture.csv.replaceAll("02/09/26", "28/08/26");
+    assert.equal((await fixture.sync("link-initial")).body.inserted, 3);
+    let s = await state();
+    assert.equal(s.transactions.filter(t => t.categoryPending).length, 2);
+    const expense = s.transactions.find(t => t.type === "expense"), food = s.categories.find(c => c.name === "Alimentación");
+    const identities = s.transactions.map(t => [t.id, t.sourceId, t.code]);
+    await budgetAction(fixture.tables, "u1", { action: "budget_link", monthKey: "2026-09", transactionId: expense.id, categoryId: food.id, applyGroup: true });
+    s = await state();
+    assert.equal(s.transactions.filter(t => t.categoryPending).length, 0);
+    assert.equal(s.transactions.filter(t => t.type === "expense" && t.categoryId === food.id).length, 2);
+    assert.equal(s.transactions.find(t => t.id === expense.id).sourceCategory, "Prueba");
+    assert.deepEqual(s.transactions.map(t => [t.id, t.sourceId, t.code]), identities);
+    assert.equal((await fixture.sync("link-repeat")).body.ignored, 3);
+    fixture.csv += "\n29/08/26,Taxi,12,Prueba";
+    assert.equal((await fixture.sync("link-new-row")).body.inserted, 1);
+    s = await state();
+    assert.equal(s.transactions.find(t => t.description === "Taxi").categoryId, food.id);
+    assert.equal(s.transactions.find(t => t.description === "Taxi").categoryPending, false);
+    await fixture.tables.updateRow({ tableId: T.sources, rowId: "source", data: { source_url: "https://docs.google.com/spreadsheets/d/book/edit?sheet=Oct%2026", source_name: "Google Spreadsheet book · Oct 26" } });
+    assert.equal((await fixture.sync("other-tab")).body.inserted, 4);
+    s = await state();
+    assert.equal(s.transactions.filter(t => t.categoryPending).length, 3);
+    assert.equal(s.transactions.length, 8);
+  } finally { fixture.restore(); }
+});
+
+test("preview can add the original category or a new one without creating a movement", async () => {
+  const fixture = await syncFixture(1);
+  const { budgetAction, loadBudgetProfile } = await import("../lib/budget-store.ts");
+  const { mapCategory } = await import("../lib/midas-data.ts");
+  const { sourceScope } = await import("../lib/ledger.ts");
+  const { aliasKey, planFor } = await import("../lib/budgeting.ts");
+  const sourceUrl = "https://docs.google.com/spreadsheets/d/book/edit?sheet=Set%2026";
+  try {
+    for (const [mode, original, name] of [["current", "Comidas", "ignored"], ["new", "Viajes", "Movilidad"]]) {
+      await budgetAction(fixture.tables, "u1", { action: "budget_link", monthKey: "2026-09", sourceUrl, date: "2026-08-28", original, mode, name, budget: 100, color: "#55A7E8" });
+    }
+    const cats = (await fixture.tables.listRows({ tableId: T.categories })).rows.map(mapCategory);
+    assert.deepEqual(cats.map(c => c.name), ["Comidas", "Movilidad"]);
+    const p = await loadBudgetProfile(fixture.tables, "u1", cats);
+    assert.equal(Object.values(planFor(p, "2026-09")).reduce((a, b) => a + b, 0), 200);
+    assert.equal(p.aliases[aliasKey(sourceScope(sourceUrl), "Viajes")], cats[1].id);
+    assert.equal((await fixture.tables.listRows({ tableId: T.transactions })).rows.length, 0);
+  } finally { fixture.restore(); }
+});
+
+test("budget actions reject foreign categories/rows, invalid amounts and protect existing plans atomically", async () => {
+  const fixture = await syncFixture(2);
+  const { budgetAction, loadBudgetProfile } = await import("../lib/budget-store.ts");
+  try {
+    await fixture.tables.createRow({ tableId: T.categories, rowId: "foreign", data: { user_id: "u2", name: "Privada", archived: false } });
+    await add(fixture.tables, "foreign-txn", "manual", "2026-09-02", "expense", "u2");
+    const act = p => budgetAction(fixture.tables, "u1", { monthKey: "2026-09", ...p });
+    await assert.rejects(act({ action: "budget_category", id: "foreign", budget: 100 }), /tu cuenta/);
+    await assert.rejects(act({ action: "budget_link", transactionId: "foreign-txn", categoryId: "foreign" }), /tu cuenta/);
+    for (const budget of [-1, "", "NaN", 1e20]) await assert.rejects(act({ action: "budget_category", name: "Inválida", color: "#55A7E8", budget }), /presupuesto válido/);
+    assert.equal((await fixture.tables.listRows({ tableId: T.categories })).rows.length, 1);
+    await act({ action: "budget_category", name: "Colegio y universidades", budget: 7000, color: "#55A7E8" });
+    await assert.rejects(act({ action: "budget_initial" }), /presupuesto distinto/);
+    const p = await loadBudgetProfile(fixture.tables, "u1", []);
+    assert.equal(p.initialApplied, false);
+    assert.equal(Object.values(p.budgets["2026-09"])[0], 7000);
+    assert.equal(fixture.tables.transactions.size, 0);
+  } finally { fixture.restore(); }
+});
+
+test("simultaneous budget updates retry profile conflicts without losing either category", async () => {
+  const fixture = await syncFixture(1);
+  const { budgetAction, loadBudgetProfile } = await import("../lib/budget-store.ts");
+  try {
+    await Promise.all(["Comida", "Gasolina"].map(name => budgetAction(fixture.tables, "u1", { action: "budget_category", monthKey: "2026-09", name, budget: 100, color: "#55A7E8" })));
+    const profile = await loadBudgetProfile(fixture.tables, "u1", []);
+    assert.equal(Object.keys(profile.budgets["2026-09"]).length, 2);
+    assert.equal(fixture.tables.transactions.size, 0);
+  } finally { fixture.restore(); }
+});

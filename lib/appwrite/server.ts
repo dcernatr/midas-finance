@@ -15,6 +15,7 @@ export const APPWRITE_TABLES = {
   syncLogs: "midas_spreadsheet_sync_logs",
   activity: "midas_activity_logs",
   settings: "midas_system_settings",
+  budgetProfiles: "midas_budget_profiles",
 } as const;
 
 function config() {

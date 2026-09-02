@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle, ArrowDownRight, ArrowUpRight, BarChart3, Calculator, Check,
   ChevronRight, CircleDollarSign, CircleHelp, CreditCard, Database, Download,
@@ -29,16 +29,21 @@ import { MidasCatIcon } from "@/components/midas-cat-icon";
 import { SpreadsheetMapping } from "@/components/spreadsheet-mapping";
 import type { ColumnMapping } from "@/lib/spreadsheet";
 import { ApiResponseError, readApiResponse, spreadsheetRequest } from "@/lib/api-response";
+import { DEFAULT_LEDGER_FILTERS, filterLedger, ledgerPeriods } from "@/lib/ledger-view";
+import { type BudgetProfile, type BudgetPeriod, periodForDate, periodProgress, shiftPeriod } from "@/lib/budgeting";
+import { withSpreadsheetSheet } from "@/lib/spreadsheet";
+import { BudgetCategoryPicker } from "@/components/budget-category-picker";
+import { BudgetPeriodSettings } from "@/components/budget-period-settings";
 
 type Month = { id: string; monthKey: string; income: number; savingsTarget: number; status: string };
-type Category = { id: string; name: string; groupName: string; budget: number; color: string; kind: string; archived: boolean };
-type Transaction = { id: string; code: string | null; date: string; description: string; amount: number; categoryId: string | null; debtId: string | null; type: string; account: string; subcategory: string | null; paymentMethod: string | null; notes: string | null; sourceType: string; sourceId: string | null; sourceName: string | null; sourceImportedAt: string | null };
+type Category = { id: string; name: string; groupName: string; budget: number; color: string; kind: string; archived: boolean; planned: boolean };
+type Transaction = { id: string; code: string | null; date: string; description: string; amount: number; categoryId: string | null; debtId: string | null; type: string; account: string; subcategory: string | null; paymentMethod: string | null; notes: string | null; sourceType: string; sourceId: string | null; sourceName: string | null; sourceImportedAt: string | null; sourceCategory: string; categoryPending: boolean; periodKey: string };
 type Debt = { id: string; name: string; entity: string; originalAmount: number; currentBalance: number; annualRate: number; minimumPayment: number; plannedPayment: number; dueDay: number; acquiredAt: string; status: string };
 type SpreadsheetSource = { id: string; sourceName: string; sourceUrl: string; columnMapping: string; lastSyncAt: string | null; lastSyncStatus: string; lastRowsDetected: number; lastRowsInserted: number; lastRowsIgnored: number; lastRowsFailed: number };
 type CurrentUser = { email: string; displayName: string | null; role: string; status: string };
-type FinanceState = { month: Month; categories: Category[]; transactions: Transaction[]; debts: Debt[]; spreadsheetSource: SpreadsheetSource | null; currentUser: CurrentUser };
+type FinanceState = { month: Month; categories: Category[]; transactions: Transaction[]; debts: Debt[]; spreadsheetSource: SpreadsheetSource | null; currentUser: CurrentUser; budgetProfile: BudgetProfile; period: BudgetPeriod };
 type SheetMapping = Partial<ColumnMapping>;
-type SheetPreview = { sourceName: string; sheetName: string; headers: string[]; preview: Array<Record<string, string>>; suggestedMapping: SheetMapping };
+type SheetPreview = { sourceName: string; sheetName: string; headers: string[]; preview: Array<Record<string, string>>; suggestedMapping: SheetMapping; scope: string };
 type SyncResult = { detected: number; inserted: number; ignored: number; failed: number; errors: Array<{ row: number; reason: string }>; status: string; completedAt: string; done: boolean; processed: number; total: number };
 type CategoryMetric = Category & { actual: number; available: number; percent: number; status: { label: string; tone: string } };
 type Metrics = {
@@ -53,11 +58,10 @@ const currency = new Intl.NumberFormat("es-PE", { style: "currency", currency: "
 const currency2 = new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN", minimumFractionDigits: 2 });
 const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const today = new Date().toISOString().slice(0, 10);
-const monthKey = today.slice(0, 7);
 const HELP_SECTIONS = [
   { id: "start", title: "Primeros pasos", summary: "Qué es MIDAS y cómo preparar tu primer mes.", items: ["Define tu ingreso esperado y objetivo de ahorro.", "Asigna presupuestos a las categorías.", "Registra gastos manualmente o conecta un Spreadsheet.", "Revisa Dashboard, MIDAS Score y Advisor para corregir el rumbo."] },
-  { id: "plan", title: "Gastos programados", summary: "Categorías, colores, presupuestos y comparación.", items: ["Cada categoría tiene un monto programado y un color identificador.", "Usa el lápiz para editar nombre, grupo, tipo, color y monto programado.", "Los cambios rápidos de presupuesto se guardan al salir del campo.", "Plan vs. Real utiliza los Gastos Efectivos del mismo mes.", "Las categorías con historial se archivan para preservar trazabilidad."] },
-  { id: "ledger", title: "Gastos efectivos", summary: "Registro real consolidado de ingresos y gastos.", items: ["Cada movimiento usa cinco campos claros: Fecha, Nombre, Ingreso, Gasto y Categoría.", "Los movimientos manuales y Spreadsheet conviven en la misma tabla.", "Eliminar un pago de deuda restaura también el saldo de la deuda.", "Los filtros y la exportación trabajan sobre los movimientos visibles."] },
+  { id: "plan", title: "Gastos programados", summary: "Categorías, colores, presupuestos y comparación.", items: ["Cada categoría tiene un monto programado y un color identificador.", "Usa el lápiz para editar nombre, grupo, tipo, color y monto programado.", "Los cambios rápidos de presupuesto se guardan al salir del campo.", "Plan vs. Real utiliza el periodo entre sueldos seleccionado.", "Quitar una categoría del plan afecta solo al periodo seleccionado; no elimina movimientos ni planes anteriores.", "Configura la fecha real del sueldo; la estimación del último viernes no incluye feriados.", "El presupuesto inicial de septiembre suma S/ 13,530 y comienza el 28/08/2026; requiere confirmar su aplicación.", "Los gastos pendientes de categoría cuentan en el total. El desplegable permite vincular, agregar actual o agregar nueva con presupuesto y color."] },
+  { id: "ledger", title: "Gastos efectivos", summary: "Registro real consolidado de ingresos y gastos.", items: ["Cada movimiento usa cinco campos claros: Fecha, Nombre, Ingreso, Gasto y Categoría.", "Los movimientos manuales y Spreadsheet conviven en la misma tabla.", "Eliminar un pago de deuda restaura también el saldo de la deuda.", "Los filtros y la exportación usan periodos por sueldo; las fechas y códigos originales se conservan."] },
   { id: "spreadsheet", title: "Cómo conectar un Spreadsheet", summary: "Preparación, pestaña, mapeo, sincronización y errores.", items: ["Publica la hoja o habilita un enlace exportable sin autenticación.", "Usa solo Fecha | Nombre | Ingreso | Gasto | Categoría. El código lo asigna MIDAS.", "Pega el enlace y selecciona desde MIDAS la pestaña que contiene los movimientos.", "Valida la vista previa y confirma el mapeo de columnas.", "MIDAS compara archivo, pestaña y contenido; reordenar filas no duplica. Los registros manuales se conservan. Editar una fila de la hoja la convierte en un movimiento nuevo.", "Las filas inválidas se informan sin detener las filas válidas.", "Cambiar la fuente conserva todo el histórico importado."] },
   { id: "debts", title: "Deudas", summary: "Saldo, interés, cuotas, pagos y proyección.", items: ["Registra entidad, saldo, interés y pago planificado.", "Cada pago se incorpora a Gastos Efectivos una sola vez.", "El saldo y la fecha proyectada se actualizan con cada pago.", "El simulador de pago adicional no modifica el plan real."] },
   { id: "dashboard", title: "Dashboard y MIDAS Score", summary: "Indicadores, alertas, forecast y recomendaciones.", items: ["El Dashboard resume ingreso, presupuesto, gasto, saldo y deuda.", "El forecast combina ritmo de gasto y deuda pendiente.", "MIDAS Score pondera presupuesto, ahorro, consumo discrecional y deuda.", "MIDAS Advisor separa observación, impacto y recomendación."] },
@@ -99,6 +103,8 @@ function projectDebt(debt: Debt, extra = 0) {
 }
 
 export default function Home() {
+  const [monthKey, setMonthKey] = useState(() => periodForDate(today));
+  const readVersion = useRef(0);
   const [data, setData] = useState<FinanceState | null>(null);
   const [tab, setTab] = useState("dashboard");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -112,8 +118,9 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [search, setSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
+  const [search, setSearch] = useState<string>(DEFAULT_LEDGER_FILTERS.search);
+  const [typeFilter, setTypeFilter] = useState<string>(DEFAULT_LEDGER_FILTERS.type);
+  const [ledgerPeriod, setLedgerPeriod] = useState<string>(DEFAULT_LEDGER_FILTERS.period);
   const [extras, setExtras] = useState<Record<string, number>>({});
   const [quick, setQuick] = useState({ amount: "", categoryId: "", description: "", account: "Efectivo", type: "expense", debtId: "", smart: "", date: today });
   const [newCategory, setNewCategory] = useState({ name: "", groupName: "Necesidades", budget: "", color: "#CBA65B", kind: "variable" });
@@ -128,29 +135,36 @@ export default function Home() {
   const [sheetLoading, setSheetLoading] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [syncProgress, setSyncProgress] = useState<SyncResult | null>(null);
+  const [syncRefreshPending, setSyncRefreshPending] = useState(false);
   const syncRequestId = useRef<string | null>(null);
   const syncBusy = useRef(false);
   const [changingSource, setChangingSource] = useState(false);
   const [helpSearch, setHelpSearch] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
 
-  async function load() {
+  const load = useCallback(async (): Promise<FinanceState | null> => {
+    const version = ++readVersion.current;
     setError("");
     try {
-      const response = await fetch("/api/state?month=" + monthKey);
-      if (redirectIfUnauthorized(response)) return;
+      const response = await fetch("/api/state?month=" + monthKey, { cache: "no-store" });
+      if (redirectIfUnauthorized(response)) return null;
       const result = await readApiResponse<FinanceState>(response);
+      if (version !== readVersion.current) return null;
       if (!response.ok) throw new Error(result.error || "No se pudo cargar MIDAS.");
       setData(result);
+      return result;
     } catch (cause) {
+      if (version !== readVersion.current) return null;
       setError(cause instanceof Error ? cause.message : "No se pudo cargar MIDAS.");
+      return null;
     }
-  }
+  }, [monthKey]);
 
   useEffect(() => {
+    const requestCounter = readVersion;
     const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+    return () => { window.clearTimeout(timer); requestCounter.current++; };
+  }, [load]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       if (window.localStorage.getItem("midas-theme") === "light") setTheme("light");
@@ -212,20 +226,19 @@ export default function Home() {
 
   const metrics = useMemo<Metrics | null>(() => {
     if (!data) return null;
-    const categories = data.categories.filter(c => !c.archived);
-    const monthTx = data.transactions.filter(t => t.date.startsWith(monthKey));
+    const categories = data.categories.filter(c => !c.archived && c.planned);
+    const monthTx = data.transactions.filter(t => t.date >= data.period.start && t.date < data.period.end);
     const expenseTx = monthTx.filter(t => t.type === "expense");
     const incomeTx = monthTx.filter(t => t.type === "income");
     const debtTx = monthTx.filter(t => t.type === "debt_payment");
-    const actualIncome = data.month.income + incomeTx.reduce((sum, t) => sum + t.amount, 0);
+    const actualIncome = incomeTx.reduce((sum, t) => sum + t.amount, 0);
     const spent = expenseTx.reduce((sum, t) => sum + t.amount, 0);
     const debtPaid = debtTx.reduce((sum, t) => sum + t.amount, 0);
     const budget = categories.reduce((sum, c) => sum + c.budget, 0);
     const totalDebt = data.debts.filter(d => d.status === "active").reduce((sum, d) => sum + d.currentBalance, 0);
     const actualByCategory = new Map<string, number>();
     expenseTx.forEach(t => actualByCategory.set(t.categoryId || "other", (actualByCategory.get(t.categoryId || "other") || 0) + t.amount));
-    const day = Math.max(1, new Date().getDate());
-    const days = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+    const { elapsed: day, days } = periodProgress(data.period, today);
     const pace = spent ? spent / day * days : 0;
     const pendingDebt = Math.max(0, data.debts.reduce((sum, d) => sum + d.plannedPayment, 0) - debtPaid);
     const forecast = pace + pendingDebt;
@@ -237,7 +250,7 @@ export default function Home() {
       return { ...c, actual, available: c.budget - actual, percent, status: expenseStatus(percent) };
     });
     const setupComplete = actualIncome > 0 && budget > 0;
-    const overrun = categoryRows.reduce((sum, c) => sum + Math.max(0, -c.available), 0);
+    const overrun = categoryRows.reduce((sum, c) => sum + Math.max(0, -c.available), 0) + expenseTx.filter(t => t.categoryPending).reduce((sum, t) => sum + t.amount, 0);
     const budgetFactor = budget > 0 ? 40 * Math.max(0, 1 - overrun / Math.max(1, budget)) : 0;
     const savingsFactor = data.month.savingsTarget > 0 ? 25 * Math.min(1, projectedSavings / data.month.savingsTarget) : 0;
     const discretionary = categoryRows.filter(c => c.kind === "discretionary");
@@ -261,7 +274,7 @@ export default function Home() {
     metrics.monthTx.filter(t => t.type === "expense").forEach(t => days.set(t.date, (days.get(t.date) || 0) + t.amount));
     return Array.from(days.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(entry => {
       cumulative += entry[1];
-      return { day: entry[0].slice(8), amount: cumulative };
+      return { day: entry[0].slice(5), amount: cumulative };
     });
   }, [metrics]);
 
@@ -271,11 +284,12 @@ export default function Home() {
 
   const finance = data;
   const pie = metrics.categoryRows.filter(c => c.actual > 0).map(c => ({ name: c.name, value: c.actual, color: c.color }));
-  const filtered = metrics.monthTx.filter(t => {
-    const categoryName = data.categories.find(category => category.id === t.categoryId)?.name || "";
-    const match = [t.description, categoryName, t.code, t.sourceName].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase());
-    return match && (typeFilter === "all" || t.type === typeFilter);
-  });
+  const pendingMovements = metrics.monthTx.filter(t => t.categoryPending);
+  const pendingAmount = pendingMovements.reduce((sum, t) => sum + t.amount, 0);
+  if (pendingAmount) pie.push({ name: "Pendientes de vincular", value: pendingAmount, color: "#efb45e" });
+  const filtered = filterLedger(data.transactions, data.categories, { period: ledgerPeriod, type: typeFilter, search });
+  const availablePeriods = ledgerPeriods(data.transactions, monthKey);
+  const hasLedgerFilters = search.trim() !== "" || typeFilter !== "all" || ledgerPeriod !== "all";
   const visibleHelp = HELP_SECTIONS.filter(section => (section.title + " " + section.summary + " " + section.items.join(" ")).toLowerCase().includes(helpSearch.toLowerCase()));
   const scoreTone = metrics.score === null ? "neutral" : metrics.score >= 85 ? "success" : metrics.score >= 70 ? "good" : metrics.score >= 50 ? "warning" : "danger";
   const scoreLabel = metrics.score === null ? "Sin datos" : metrics.score >= 85 ? "Óptimo" : metrics.score >= 70 ? "Bueno" : metrics.score >= 50 ? "Atención" : "Crítico";
@@ -391,21 +405,21 @@ export default function Home() {
 
   function exportCsv() {
     const rows: Array<Array<string | number>> = [
-      ["fecha", "nombre", "ingreso", "gasto", "categoria", "codigo", "origen", "fuente"],
+      ["fecha", "nombre", "ingreso", "gasto", "categoria", "codigo", "origen", "fuente", "periodo", "categoria_original"],
       ...filtered.map(t => [
         t.date,
         t.description,
         t.type === "income" ? t.amount : "",
         t.type === "income" ? "" : t.amount,
         finance.categories.find(c => c.id === t.categoryId)?.name || finance.debts.find(d => d.id === t.debtId)?.name || "",
-        t.code || "", t.sourceType === "spreadsheet" ? "Hoja" : "Manual", t.sourceName || "",
+        t.code || "", t.sourceType === "spreadsheet" ? "Hoja" : "Manual", t.sourceName || "", t.periodKey, t.sourceCategory,
       ]),
     ];
     const csv = rows.map(row => row.map(value => '"' + String(value).replace(/"/g, '""') + '"').join(",")).join("\n");
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "midas-" + monthKey + ".csv";
+    anchor.download = "midas-" + (ledgerPeriod === "all" ? "historico" : ledgerPeriod) + ".csv";
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -483,9 +497,12 @@ export default function Home() {
       } while (!result.done);
       setSyncResult(result);
       syncRequestId.current = null;
-      await load();
+      const refreshed = await load();
+      setSyncRefreshPending(!refreshed);
+      showAllMovements();
       setSheetStep("result");
-      setNotice("Sincronización completada");
+      if (refreshed) setNotice("Sincronización completada. Gastos Efectivos muestra todo el histórico.");
+      else { setNotice(""); setError("La sincronización terminó, pero no se pudo actualizar la vista. Pulsa Actualizar vista; no necesitas importar otra vez."); }
     } catch (cause) {
       if (cause instanceof ApiResponseError) {
         if (cause.status === 401) { window.location.assign("/login"); return; }
@@ -497,6 +514,25 @@ export default function Home() {
       syncBusy.current = false;
       setSheetLoading(false);
     }
+  }
+
+  function showAllMovements() {
+    setSearch(DEFAULT_LEDGER_FILTERS.search);
+    setTypeFilter(DEFAULT_LEDGER_FILTERS.type);
+    setLedgerPeriod(DEFAULT_LEDGER_FILTERS.period);
+    setTab("ledger");
+  }
+
+  async function viewSyncedMovements() {
+    if (syncRefreshPending) {
+      setSheetLoading(true);
+      const refreshed = await load();
+      setSheetLoading(false);
+      if (!refreshed) return;
+      setSyncRefreshPending(false);
+    }
+    showAllMovements();
+    setSheetOpen(false);
   }
 
   return (
@@ -537,12 +573,18 @@ export default function Home() {
           <TabsTrigger value="help"><CircleHelp /><span>HELP</span></TabsTrigger>
         </TabsList>
 
+        <div className="budget-workspace">
+          <div className="period-switch"><Button variant="outline" disabled={saving || sheetLoading} onClick={() => { setMonthKey(shiftPeriod(monthKey, -1)); setData(null); }}>Anterior</Button><label>Periodo presupuestario<input type="month" value={monthKey} min="2000-01" max="2100-12" disabled={saving || sheetLoading} onChange={e => { if (e.target.value) { setMonthKey(e.target.value); setData(null); } }} /></label><Button variant="outline" disabled={saving || sheetLoading} onClick={() => { setMonthKey(shiftPeriod(monthKey, 1)); setData(null); }}>Siguiente</Button></div>
+          <BudgetPeriodSettings key={monthKey} error={error} period={data.period} profile={data.budgetProfile} transactions={data.transactions} theme={theme} disabled={saving || sheetLoading} onSave={payload => mutate(payload, "Presupuesto del periodo actualizado")} />
+          {pendingMovements.length > 0 && <div className="inline-alert"><AlertCircle /><div><strong>{pendingMovements.length} gastos pendientes de vincular · {currency2.format(pendingAmount)}</strong><p>Ya cuentan en el total gastado. En la columna Categoría puedes vincularlos o actualizar Gastos Programados.</p></div><Button variant="outline" onClick={() => { showAllMovements(); setLedgerPeriod(monthKey); setTypeFilter("expense"); }}>Revisar gastos</Button></div>}
+        </div>
+
         <TabsContent value="dashboard" className="page-content">
           <PageHeading eyebrow="HUB DE CONTROL DE GASTOS" title="Control del mes" subtitle="Lo que planificaste, lo que ocurrió y lo que debes corregir." extra={<div className="data-badge"><ShieldCheck /> Datos persistentes y cálculos trazables</div>} />
           {!metrics.setupComplete && <section className="setup-banner"><div className="setup-icon"><Sparkles /></div><div><strong>Configura tu plan inicial</strong><p>Completa ingreso, ahorro y presupuestos para activar el MIDAS Score y el forecast.</p></div><Button className="gold-button" onClick={() => setTab("plan")}>Configurar <ChevronRight /></Button></section>}
 
           <section className="kpi-grid">
-            <Kpi title="Ingresos del mes" value={currency.format(metrics.actualIncome)} note="Plan + ingresos registrados" icon={<ArrowUpRight />} tone="blue" />
+            <Kpi title="Ingresos del periodo" value={currency.format(metrics.actualIncome)} note="Solo ingresos registrados; no suma el plan" icon={<ArrowUpRight />} tone="blue" />
             <Kpi title="Presupuesto total" value={currency.format(metrics.budget)} note="Distribuido por categorías" icon={<Target />} tone="gold" />
             <Kpi title="Gasto real" value={currency.format(metrics.spent)} note={(metrics.budget ? Math.round(metrics.spent / metrics.budget * 100) : 0) + "% del presupuesto"} icon={<ArrowDownRight />} tone="red" />
             <Kpi title="Saldo disponible" value={currency.format(metrics.available)} note="Después de gastos y deuda" icon={<WalletCards />} tone={metrics.available >= 0 ? "green" : "red"} />
@@ -588,16 +630,16 @@ export default function Home() {
         <TabsContent value="plan" className="page-content">
           <PageHeading eyebrow="EL PLAN DEL MES" title="Gastos programados" subtitle="Asigna cada sol antes de gastarlo y detecta compromisos excesivos." compact extra={<Button className="gold-button" onClick={() => openCategory()}><Plus /> Categoría</Button>} />
           <section className="plan-summary panel">
-            <FieldMoney label="Ingreso esperado" id="income" value={data.month.income} onBlur={value => mutate({ action: "set_month", income: value, savingsTarget: data.month.savingsTarget }, "Ingreso actualizado")} />
+            <FieldMoney key={monthKey + ":income:" + data.month.income} label="Ingreso esperado" id="income" value={data.month.income} onBlur={value => mutate({ action: "set_month", income: value, savingsTarget: data.month.savingsTarget }, "Ingreso actualizado")} />
             <div className="plan-operator">−</div><SummaryNumber label="Presupuesto" value={metrics.budget} />
-            <div className="plan-operator">−</div><FieldMoney label="Ahorro objetivo" id="savings" value={data.month.savingsTarget} onBlur={value => mutate({ action: "set_month", income: data.month.income, savingsTarget: value }, "Objetivo actualizado")} />
+            <div className="plan-operator">−</div><FieldMoney key={monthKey + ":savings:" + data.month.savingsTarget} label="Ahorro objetivo" id="savings" value={data.month.savingsTarget} onBlur={value => mutate({ action: "set_month", income: data.month.income, savingsTarget: value }, "Objetivo actualizado")} />
             <div className="plan-operator">=</div><SummaryNumber label="Saldo planificado" value={data.month.income - metrics.budget - data.month.savingsTarget} result />
           </section>
           {data.month.income > 0 && data.month.income - metrics.budget - data.month.savingsTarget < 0 && <div className="inline-alert"><AlertCircle /><div><strong>Los compromisos superan tu ingreso</strong><p>Reduce el presupuesto o el ahorro objetivo en {currency.format(Math.abs(data.month.income - metrics.budget - data.month.savingsTarget))}.</p></div></div>}
           <section className="panel budget-table-panel">
             <PanelTitle eyebrow="CATEGORÍAS" title="Presupuesto por categoría" extra={<span className="small-meta">Se guarda al salir del campo</span>} />
             <Table className="midas-table"><TableHeader><TableRow><TableHead>Categoría</TableHead><TableHead>Grupo</TableHead><TableHead>Tipo</TableHead><TableHead className="align-right">Programado</TableHead><TableHead className="align-right">Real</TableHead><TableHead>Estado</TableHead><TableHead /></TableRow></TableHeader>
-              <TableBody>{metrics.categoryRows.map(row => <TableRow key={row.id}><TableCell><CategoryName category={row} /></TableCell><TableCell className="muted-cell">{row.groupName}</TableCell><TableCell><span className="type-chip">{row.kind === "fixed" ? "Fijo" : row.kind === "discretionary" ? "Discrecional" : "Variable"}</span></TableCell><TableCell><div className="inline-money"><span>S/</span><input type="number" min="0" defaultValue={row.budget} onBlur={e => mutate({ action: "update_category", id: row.id, budget: Number(e.target.value) })} /></div></TableCell><TableCell className="align-right strong-cell">{currency.format(row.actual)}</TableCell><TableCell><span className={"status-pill " + row.status.tone}><span />{row.status.label}</span></TableCell><TableCell><div className="row-actions"><Button variant="ghost" size="icon-sm" aria-label={"Editar " + row.name} onClick={() => openCategory(row)}><Pencil /></Button><Button variant="ghost" size="icon-sm" aria-label={"Archivar " + row.name} onClick={() => mutate({ action: "archive_category", id: row.id }, "Categoría archivada")}><Trash2 /></Button></div></TableCell></TableRow>)}</TableBody>
+              <TableBody>{metrics.categoryRows.map(row => <TableRow key={row.id}><TableCell><CategoryName category={row} /></TableCell><TableCell className="muted-cell">{row.groupName}</TableCell><TableCell><span className="type-chip">{row.kind === "fixed" ? "Fijo" : row.kind === "discretionary" ? "Discrecional" : "Variable"}</span></TableCell><TableCell><div className="inline-money"><span>S/</span><input key={monthKey + ":" + row.budget} type="number" min="0" step="0.01" defaultValue={row.budget} onBlur={e => { if (e.target.value !== "" && Number(e.target.value) !== row.budget) void mutate({ action: "budget_category", id: row.id, budget: Number(e.target.value) }); }} /></div></TableCell><TableCell className="align-right strong-cell">{currency.format(row.actual)}</TableCell><TableCell><span className={"status-pill " + row.status.tone}><span />{row.status.label}</span></TableCell><TableCell><div className="row-actions"><Button variant="ghost" size="icon-sm" aria-label={"Editar " + row.name} onClick={() => openCategory(row)}><Pencil /></Button><Button variant="ghost" size="icon-sm" aria-label={"Quitar del periodo " + row.name} onClick={() => mutate({ action: "budget_remove", id: row.id }, "Categoría retirada solo de este periodo")}><Trash2 /></Button></div></TableCell></TableRow>)}</TableBody>
             </Table>
           </section>
         </TabsContent>
@@ -608,19 +650,24 @@ export default function Home() {
           <section className="ledger-toolbar panel">
             <div className="search-box"><Search /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar nombre, código o categoría…" aria-label="Buscar movimientos" /></div>
             <Select value={typeFilter} onValueChange={setTypeFilter}><SelectTrigger className="filter-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos los tipos</SelectItem><SelectItem value="expense">Gastos</SelectItem><SelectItem value="income">Ingresos</SelectItem><SelectItem value="debt_payment">Pagos de deuda</SelectItem></SelectContent></Select>
+            <select className="ledger-period" aria-label="Periodo de los movimientos" value={ledgerPeriod} onChange={event => setLedgerPeriod(event.target.value)}>
+              <option value="all">Todos los periodos</option>
+              {availablePeriods.map(period => <option key={period} value={period}>{monthLabel(period)}</option>)}
+            </select>
             <input ref={importRef} type="file" accept=".csv,text/csv" hidden onChange={e => e.target.files?.[0] && importCsv(e.target.files[0])} />
             <Button variant="outline" onClick={() => importRef.current?.click()}><FileUp /> Importar CSV</Button>
             <Button variant="outline" onClick={exportCsv}><Download /> Exportar</Button>
           </section>
           <section className="panel ledger-panel">
+            <div className="ledger-summary"><p role="status">{filtered.length} de {data.transactions.length} movimientos · {ledgerPeriod === "all" ? "Todos los periodos" : monthLabel(ledgerPeriod)}<span>El Dashboard utiliza el periodo presupuestario seleccionado y su fecha de sueldo.</span></p>{hasLedgerFilters && <Button variant="outline" onClick={showAllMovements}>Quitar filtros</Button>}</div>
             <Table className="midas-table ledger-table"><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Nombre</TableHead><TableHead className="align-right">Ingreso</TableHead><TableHead className="align-right">Gasto</TableHead><TableHead>Categoría</TableHead><TableHead><span className="sr-only">Acciones</span></TableHead></TableRow></TableHeader>
               <TableBody>{filtered.map(t => {
                 const category = data.categories.find(c => c.id === t.categoryId);
                 const debt = data.debts.find(d => d.id === t.debtId);
-                return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</TableCell><TableCell className="strong-cell"><span className="transaction-name">{t.description}</span><span className="transaction-origin"><code className="transaction-code">{t.code || "Pendiente"}</code><span title={t.sourceName || "Registro manual"}>{t.sourceType === "spreadsheet" ? "Hoja · " + (t.sourceName?.split(" · ").slice(1).join(" · ") || "Spreadsheet") : "Manual"}</span></span></TableCell><TableCell className="align-right amount-cell positive">{t.type === "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell className="align-right amount-cell">{t.type !== "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell>{category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
+                return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</TableCell><TableCell className="strong-cell"><span className="transaction-name">{t.description}</span><span className="transaction-origin"><code className="transaction-code">{t.code || "Pendiente"}</code><span title={t.sourceName || "Registro manual"}>{t.sourceType === "spreadsheet" ? "Hoja · " + (t.sourceName?.split(" · ").slice(1).join(" · ") || "Spreadsheet") : "Manual"}</span></span></TableCell><TableCell className="align-right amount-cell positive">{t.type === "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell className="align-right amount-cell">{t.type !== "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell>{t.type === "expense" ? <BudgetCategoryPicker categories={data.categories} profile={data.budgetProfile} date={t.date} original={t.sourceCategory || category?.name || "Sin categoría"} categoryId={t.categoryId} transactionId={t.id} sourceId={t.sourceId} pending={t.categoryPending} error={error} observedAmount={t.amount} theme={theme} disabled={saving || sheetLoading} onSave={payload => mutate(payload, "Categoría vinculada al presupuesto")} /> : category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
               })}</TableBody>
             </Table>
-            {!filtered.length && <EmptyState icon={<ReceiptText />} title="No hay movimientos" text={search || typeFilter !== "all" ? "No encontramos resultados con esos filtros." : "Registra tu primer ingreso o gasto."} action={<Button className="gold-button" onClick={() => openQuick()}><Plus /> Movimiento</Button>} />}
+            {!filtered.length && <EmptyState icon={<ReceiptText />} title={data.transactions.length ? "No hay resultados con estos filtros" : "No hay movimientos"} text={data.transactions.length ? "Hay movimientos guardados. Quita los filtros para ver el histórico completo." : "Registra tu primer ingreso o gasto, o sincroniza una pestaña."} action={data.transactions.length ? <Button className="gold-button" onClick={showAllMovements}>Ver todos los movimientos</Button> : <Button className="gold-button" onClick={() => openQuick()}><Plus /> Movimiento</Button>} />}
           </section>
         </TabsContent>
 
@@ -699,7 +746,7 @@ export default function Home() {
 
           {sheetStep === "mapping" && sheetPreview && <div className="mapping-step">
             <div className="preview-chip"><Check /> Pestaña “{sheetPreview.sheetName}” accesible · {sheetPreview.headers.length} columnas detectadas</div>
-            <SpreadsheetMapping headers={sheetPreview.headers} preview={sheetPreview.preview} mapping={sheetMapping} onChange={setSheetMapping} disabled={sheetLoading} />
+            <SpreadsheetMapping headers={sheetPreview.headers} preview={sheetPreview.preview} mapping={sheetMapping} onChange={setSheetMapping} disabled={sheetLoading || saving} budgetContext={{ profile: data.budgetProfile, categories: data.categories, sourceUrl: withSpreadsheetSheet(sheetUrl, sheetName), scope: sheetPreview.scope, theme, error, onSave: payload => mutate(payload, "Categoría vinculada al presupuesto") }} />
             <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("url")}>Cambiar pestaña</Button><Button className="gold-button" disabled={sheetLoading || !sheetMapping.date || !sheetMapping.description || !sheetMapping.category || (!sheetMapping.income && !sheetMapping.expense)} onClick={saveSpreadsheetSource}>{sheetLoading ? "Guardando…" : "Guardar conexión"}</Button></div>
           </div>}
 
@@ -707,7 +754,8 @@ export default function Home() {
             <div className={"result-icon " + syncResult.status}>{syncResult.status === "success" ? <Check /> : <AlertCircle />}</div>
             <div className="sync-summary large"><MiniResult label="Encontrados" value={syncResult.detected} /><MiniResult label="Nuevos agregados" value={syncResult.inserted} /><MiniResult label="Existentes ignorados" value={syncResult.ignored} /><MiniResult label="Errores" value={syncResult.failed} /></div>
             {syncResult.errors.length > 0 && <div className="sync-errors"><strong>{syncResult.failed} registros no pudieron importarse</strong>{syncResult.errors.map(error => <p key={error.row}>Fila {error.row} — {error.reason}</p>)}</div>}
-            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("status")}>Ver fuente</Button><Button className="gold-button" onClick={() => setSheetOpen(false)}>Cerrar</Button></div>
+            <p className="mapping-explainer">Los movimientos conservan la fecha de la hoja y se muestran junto con tus registros manuales, en todos los meses.</p>
+            <div className="sheet-actions"><Button variant="outline" disabled={sheetLoading} onClick={() => setSheetStep("status")}>Ver fuente</Button><Button className="gold-button" disabled={sheetLoading} onClick={viewSyncedMovements}>{sheetLoading ? "Actualizando…" : syncRefreshPending ? "Actualizar vista" : "Ver movimientos"}</Button></div>
           </div>}
         </DialogContent>
       </Dialog>
@@ -728,7 +776,7 @@ export default function Home() {
       <Dialog open={categoryOpen} onOpenChange={open => { setCategoryOpen(open); if (!open) setEditingCategory(null); }}>
         <DialogContent className="midas-dialog"><DialogHeader><p className="eyebrow">PLAN DEL MES</p><DialogTitle>{editingCategory ? "Editar gasto programado" : "Nueva categoría"}</DialogTitle><DialogDescription>{editingCategory ? "Actualiza categoría, grupo, tipo, color y monto programado." : "Agrupa, asigna color y define su presupuesto."}</DialogDescription></DialogHeader>
           <div className="dialog-grid"><DialogField label="Nombre" wide><input value={newCategory.name} onChange={e => setNewCategory({ ...newCategory, name: e.target.value })} placeholder="Ej. Supermercado" /></DialogField><DialogField label="Grupo"><input value={newCategory.groupName} onChange={e => setNewCategory({ ...newCategory, groupName: e.target.value })} /></DialogField><DialogField label="Presupuesto"><div className="money-input"><span>S/</span><input type="number" min="0" value={newCategory.budget} onChange={e => setNewCategory({ ...newCategory, budget: e.target.value })} /></div></DialogField><DialogField label="Tipo"><Select value={newCategory.kind} onValueChange={value => setNewCategory({ ...newCategory, kind: value })}><SelectTrigger className="full-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="fixed">Fijo</SelectItem><SelectItem value="variable">Variable</SelectItem><SelectItem value="discretionary">Discrecional</SelectItem></SelectContent></Select></DialogField><DialogField label="Color"><input className="color-input" type="color" value={newCategory.color} onChange={e => setNewCategory({ ...newCategory, color: e.target.value })} /></DialogField></div>
-          <Button className="gold-button" disabled={!newCategory.name || saving} onClick={async () => { const ok = await mutate({ action: editingCategory ? "update_category" : "add_category", id: editingCategory?.id, ...newCategory, budget: Number(newCategory.budget) }, editingCategory ? "Gasto programado actualizado" : "Categoría creada"); if (ok) { setCategoryOpen(false); setEditingCategory(null); setNewCategory({ name: "", groupName: "Necesidades", budget: "", color: "#CBA65B", kind: "variable" }); } }}>{saving ? "Guardando…" : editingCategory ? "Guardar cambios" : "Crear categoría"}</Button>
+          <Button className="gold-button" disabled={!newCategory.name.trim() || newCategory.budget === "" || !Number.isFinite(Number(newCategory.budget)) || Number(newCategory.budget) < 0 || saving} onClick={async () => { const ok = await mutate({ action: editingCategory ? "update_category" : "add_category", id: editingCategory?.id, ...newCategory, budget: Number(newCategory.budget) }, editingCategory ? "Gasto programado actualizado" : "Categoría creada"); if (ok) { setCategoryOpen(false); setEditingCategory(null); setNewCategory({ name: "", groupName: "Necesidades", budget: "", color: "#CBA65B", kind: "variable" }); } }}>{saving ? "Guardando…" : editingCategory ? "Guardar cambios" : "Crear categoría"}</Button>
         </DialogContent>
       </Dialog>
 
