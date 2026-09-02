@@ -24,6 +24,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const { SpreadsheetMapping } = await import("../components/spreadsheet-mapping.tsx");
 const { BudgetPeriodSettings } = await import("../components/budget-period-settings.tsx");
+const { ExpenseLedger } = await import("../components/expense-ledger.tsx");
 const { emptyProfile, periodWindow } = await import("../lib/budgeting.ts");
 const categories = [{ id: "food", name: "Alimentación", budget: 1000, color: "#54C7A0", archived: false }];
 const profile = emptyProfile(categories, "2026-09");
@@ -52,4 +53,23 @@ test("rendered period settings expose salary boundaries, uncertainty and confirm
   assert.match(html, /Fin estimado/);
   assert.match(html, /no incluye feriados/);
   assert.match(html, /13,530/);
+});
+
+test("ledger prioritizes five fields and collapses provenance; pagination totals include all filtered rows", () => {
+  const rows = Array.from({ length: 26 }, (_, n) => ({ id: "t" + n, date: "2026-09-02", description: "Gasto " + n, amount: 10, type: "expense", code: "26-09-G-" + n, categoryId: "food", sourceCategory: "Alimentación", periodKey: "2026-09", sourceType: "manual", sourceName: null, sourceId: null, debtId: null, categoryPending: false }));
+  const html = renderToStaticMarkup(React.createElement(ExpenseLedger, { rows, categories, profile, debts: [], disabled: false, theme: "light", onSave: async () => true, onEdit() {}, onDelete() {} }));
+  for (const label of ["Fecha", "Nombre", "Ingreso", "Gasto", "Categoría"]) assert.ok(html.includes(">" + label + "</th>"));
+  assert.equal((html.match(/<details /g) || []).length, 25);
+  assert.doesNotMatch(html, /<details[^>]* open/);
+  assert.match(html, /260\.00/);
+  assert.doesNotMatch(html, /Gasto 25</);
+  assert.match(html, /de 26/);
+  assert.match(html, /data-label="Categoría"/);
+});
+
+test("initial budget status never presents the template as saved before persistence", () => {
+  const render = p => renderToStaticMarkup(React.createElement(BudgetPeriodSettings, { categories, profile: p, period: periodWindow("2026-09", p.starts), transactions: [], disabled: false, theme: "dark", onSave: async () => true }));
+  assert.match(render(profile), /todavía no está cargado/);
+  const saved = render({ ...profile, initialApplied: true });
+  assert.match(saved, /guardado en tu cuenta/); assert.doesNotMatch(saved, /Revisar y cargar/);
 });

@@ -30,9 +30,11 @@ import { SpreadsheetMapping } from "@/components/spreadsheet-mapping";
 import type { ColumnMapping } from "@/lib/spreadsheet";
 import { ApiResponseError, readApiResponse, spreadsheetRequest } from "@/lib/api-response";
 import { DEFAULT_LEDGER_FILTERS, filterLedger, ledgerPeriods } from "@/lib/ledger-view";
-import { type BudgetProfile, type BudgetPeriod, periodForDate, periodProgress, shiftPeriod } from "@/lib/budgeting";
+import { type BudgetProfile, type BudgetPeriod, periodForDate, shiftPeriod } from "@/lib/budgeting";
 import { withSpreadsheetSheet } from "@/lib/spreadsheet";
-import { BudgetCategoryPicker } from "@/components/budget-category-picker";
+import { ExpenseLedger } from "@/components/expense-ledger";
+import { financeMetrics } from "@/lib/finance-metrics";
+import { StateOrder } from "@/lib/state-order";
 import { BudgetPeriodSettings } from "@/components/budget-period-settings";
 
 type Month = { id: string; monthKey: string; income: number; savingsTarget: number; status: string };
@@ -46,18 +48,12 @@ type SheetMapping = Partial<ColumnMapping>;
 type SheetPreview = { sourceName: string; sheetName: string; headers: string[]; preview: Array<Record<string, string>>; suggestedMapping: SheetMapping; scope: string };
 type SyncResult = { detected: number; inserted: number; ignored: number; failed: number; errors: Array<{ row: number; reason: string }>; status: string; completedAt: string; done: boolean; processed: number; total: number };
 type CategoryMetric = Category & { actual: number; available: number; percent: number; status: { label: string; tone: string } };
-type Metrics = {
-  monthTx: Transaction[]; actualIncome: number; spent: number; debtPaid: number;
-  budget: number; totalDebt: number; available: number; forecast: number;
-  projectedSavings: number; score: number | null; setupComplete: boolean;
-  categoryRows: CategoryMetric[];
-  factors: { budget: number; savings: number; discretion: number; debt: number };
-};
+type Metrics = ReturnType<typeof financeMetrics<Transaction>>;
 
 const currency = new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN", maximumFractionDigits: 0 });
 const currency2 = new Intl.NumberFormat("es-PE", { style: "currency", currency: "PEN", minimumFractionDigits: 2 });
 const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
-const today = new Date().toISOString().slice(0, 10);
+const localToday = () => new Intl.DateTimeFormat("sv-SE", { timeZone: "America/Lima" }).format(new Date());
 const HELP_SECTIONS = [
   { id: "start", title: "Primeros pasos", summary: "Qué es MIDAS y cómo preparar tu primer mes.", items: ["Define tu ingreso esperado y objetivo de ahorro.", "Asigna presupuestos a las categorías.", "Registra gastos manualmente o conecta un Spreadsheet.", "Revisa Dashboard, MIDAS Score y Advisor para corregir el rumbo."] },
   { id: "plan", title: "Gastos programados", summary: "Categorías, colores, presupuestos y comparación.", items: ["Cada categoría tiene un monto programado y un color identificador.", "Usa el lápiz para editar nombre, grupo, tipo, color y monto programado.", "Los cambios rápidos de presupuesto se guardan al salir del campo.", "Plan vs. Real utiliza el periodo entre sueldos seleccionado.", "Quitar una categoría del plan afecta solo al periodo seleccionado; no elimina movimientos ni planes anteriores.", "Configura la fecha real del sueldo; la estimación del último viernes no incluye feriados.", "El presupuesto inicial de septiembre suma S/ 13,530 y comienza el 28/08/2026; requiere confirmar su aplicación.", "Los gastos pendientes de categoría cuentan en el total. El desplegable permite vincular, agregar actual o agregar nueva con presupuesto y color."] },
@@ -72,12 +68,6 @@ function monthLabel(key: string) {
   return monthNames[parts[1] - 1] + " " + parts[0];
 }
 
-function expenseStatus(percent: number) {
-  if (!Number.isFinite(percent)) return { label: "Sin presupuesto", tone: "neutral" };
-  if (percent > 100) return { label: "Desviación", tone: "danger" };
-  if (percent >= 80) return { label: "Atención", tone: "warning" };
-  return { label: "Óptimo", tone: "success" };
-}
 
 function redirectIfUnauthorized(response: Response) {
   if (response.status !== 401 && !(response.redirected && new URL(response.url).pathname === "/login")) return false;
@@ -103,8 +93,13 @@ function projectDebt(debt: Debt, extra = 0) {
 }
 
 export default function Home() {
+  const today = localToday();
+  const initialPeriodResolved = useRef(false);
   const [monthKey, setMonthKey] = useState(() => periodForDate(today));
-  const readVersion = useRef(0);
+  const stateOrder = useRef(new StateOrder());
+  const [refreshing, setRefreshing] = useState(false);
+  const [stale, setStale] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState("");
   const [data, setData] = useState<FinanceState | null>(null);
   const [tab, setTab] = useState("dashboard");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -143,27 +138,44 @@ export default function Home() {
   const importRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (): Promise<FinanceState | null> => {
-    const version = ++readVersion.current;
+    const version = stateOrder.current.beginRead();
+    if (version === null) return null;
+    setRefreshing(true);
     setError("");
     try {
       const response = await fetch("/api/state?month=" + monthKey, { cache: "no-store" });
       if (redirectIfUnauthorized(response)) return null;
       const result = await readApiResponse<FinanceState>(response);
-      if (version !== readVersion.current) return null;
+      if (!stateOrder.current.accepts(version)) return null;
       if (!response.ok) throw new Error(result.error || "No se pudo cargar MIDAS.");
+      if (!initialPeriodResolved.current) {
+        initialPeriodResolved.current = true;
+        const current = periodForDate(localToday(), result.budgetProfile.starts);
+        if (current !== monthKey) { setMonthKey(current); return null; }
+      }
       setData(result);
+      setStale(false);
+      setUpdatedAt(new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }));
       return result;
     } catch (cause) {
-      if (version !== readVersion.current) return null;
+      if (!stateOrder.current.accepts(version)) return null;
+      setStale(true);
       setError(cause instanceof Error ? cause.message : "No se pudo cargar MIDAS.");
       return null;
+    } finally {
+      if (stateOrder.current.accepts(version)) setRefreshing(false);
     }
   }, [monthKey]);
 
   useEffect(() => {
-    const requestCounter = readVersion;
+    const order = stateOrder.current;
     const timer = window.setTimeout(() => { void load(); }, 0);
-    return () => { window.clearTimeout(timer); requestCounter.current++; };
+    return () => { window.clearTimeout(timer); order.invalidate(); };
+  }, [load]);
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible" && !stateOrder.current.pending && !syncBusy.current) void load(); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
   }, [load]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -200,78 +212,41 @@ export default function Home() {
 
   async function mutate(payload: Record<string, unknown>, success?: string) {
     setSaving(true);
+    setRefreshing(false);
     setError("");
-    try {
-      const response = await fetch("/api/state", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, monthKey }),
-      });
-      if (redirectIfUnauthorized(response)) return false;
-      const result = await readApiResponse<FinanceState>(response);
-      if (!response.ok) throw new Error(result.error || "No se pudo guardar.");
-      setData(result);
-      if (success) {
-        setNotice(success);
-        window.setTimeout(() => setNotice(""), 3500);
+    return stateOrder.current.enqueue(async () => {
+      try {
+        const response = await fetch("/api/state", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, monthKey }),
+        });
+        if (redirectIfUnauthorized(response)) return false;
+        const result = await readApiResponse<FinanceState>(response);
+        if (!response.ok) throw new Error(result.error || "No se pudo guardar.");
+        setData(result);
+        setStale(false);
+        setUpdatedAt(new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" }));
+        if (success) {
+          setNotice(success);
+          window.setTimeout(() => setNotice(""), 3500);
+        }
+        return true;
+      } catch (cause) {
+        setStale(true);
+        setError(cause instanceof Error ? cause.message : "No se pudo confirmar el guardado. Actualiza antes de repetir.");
+        return false;
       }
-      return true;
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo guardar.");
-      return false;
-    } finally {
-      setSaving(false);
-    }
+    }).finally(() => setSaving(stateOrder.current.pending));
   }
 
-  const metrics = useMemo<Metrics | null>(() => {
-    if (!data) return null;
-    const categories = data.categories.filter(c => !c.archived && c.planned);
-    const monthTx = data.transactions.filter(t => t.date >= data.period.start && t.date < data.period.end);
-    const expenseTx = monthTx.filter(t => t.type === "expense");
-    const incomeTx = monthTx.filter(t => t.type === "income");
-    const debtTx = monthTx.filter(t => t.type === "debt_payment");
-    const actualIncome = incomeTx.reduce((sum, t) => sum + t.amount, 0);
-    const spent = expenseTx.reduce((sum, t) => sum + t.amount, 0);
-    const debtPaid = debtTx.reduce((sum, t) => sum + t.amount, 0);
-    const budget = categories.reduce((sum, c) => sum + c.budget, 0);
-    const totalDebt = data.debts.filter(d => d.status === "active").reduce((sum, d) => sum + d.currentBalance, 0);
-    const actualByCategory = new Map<string, number>();
-    expenseTx.forEach(t => actualByCategory.set(t.categoryId || "other", (actualByCategory.get(t.categoryId || "other") || 0) + t.amount));
-    const { elapsed: day, days } = periodProgress(data.period, today);
-    const pace = spent ? spent / day * days : 0;
-    const pendingDebt = Math.max(0, data.debts.reduce((sum, d) => sum + d.plannedPayment, 0) - debtPaid);
-    const forecast = pace + pendingDebt;
-    const available = actualIncome - spent - debtPaid;
-    const projectedSavings = Math.max(0, actualIncome - forecast);
-    const categoryRows = categories.map(c => {
-      const actual = actualByCategory.get(c.id) || 0;
-      const percent = c.budget > 0 ? actual / c.budget * 100 : actual > 0 ? Infinity : 0;
-      return { ...c, actual, available: c.budget - actual, percent, status: expenseStatus(percent) };
-    });
-    const setupComplete = actualIncome > 0 && budget > 0;
-    const overrun = categoryRows.reduce((sum, c) => sum + Math.max(0, -c.available), 0) + expenseTx.filter(t => t.categoryPending).reduce((sum, t) => sum + t.amount, 0);
-    const budgetFactor = budget > 0 ? 40 * Math.max(0, 1 - overrun / Math.max(1, budget)) : 0;
-    const savingsFactor = data.month.savingsTarget > 0 ? 25 * Math.min(1, projectedSavings / data.month.savingsTarget) : 0;
-    const discretionary = categoryRows.filter(c => c.kind === "discretionary");
-    const discretionBudget = discretionary.reduce((sum, c) => sum + c.budget, 0);
-    const discretionSpent = discretionary.reduce((sum, c) => sum + c.actual, 0);
-    const discretionFactor = discretionBudget > 0 ? 15 * Math.max(0, 1 - Math.max(0, discretionSpent - discretionBudget) / discretionBudget) : 15;
-    const debtPlan = data.debts.reduce((sum, d) => sum + d.plannedPayment, 0);
-    const debtFactor = data.debts.length ? 20 * Math.min(1, debtPaid / Math.max(1, debtPlan)) : 20;
-    const score = setupComplete ? Math.round(Math.min(100, budgetFactor + savingsFactor + discretionFactor + debtFactor)) : null;
-    return {
-      monthTx, actualIncome, spent, debtPaid, budget, totalDebt, available,
-      forecast, projectedSavings, score, setupComplete, categoryRows,
-      factors: { budget: budgetFactor, savings: savingsFactor, discretion: discretionFactor, debt: debtFactor },
-    };
-  }, [data]);
+  const metrics = useMemo<Metrics | null>(() => data ? financeMetrics(data, today) : null, [data, today]);
 
   const trend = useMemo(() => {
     if (!metrics) return [];
     let cumulative = 0;
     const days = new Map<string, number>();
-    metrics.monthTx.filter(t => t.type === "expense").forEach(t => days.set(t.date, (days.get(t.date) || 0) + t.amount));
+    metrics.monthTx.filter(t => t.type !== "income").forEach(t => days.set(t.date, (days.get(t.date) || 0) + t.amount));
     return Array.from(days.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(entry => {
       cumulative += entry[1];
       return { day: entry[0].slice(5), amount: cumulative };
@@ -284,15 +259,22 @@ export default function Home() {
 
   const finance = data;
   const pie = metrics.categoryRows.filter(c => c.actual > 0).map(c => ({ name: c.name, value: c.actual, color: c.color }));
-  const pendingMovements = metrics.monthTx.filter(t => t.categoryPending);
-  const pendingAmount = pendingMovements.reduce((sum, t) => sum + t.amount, 0);
+  const { pendingMovements, pendingAmount } = metrics;
   if (pendingAmount) pie.push({ name: "Pendientes de vincular", value: pendingAmount, color: "#efb45e" });
+  if (metrics.debtPaid) pie.push({ name: "Pagos de deuda", value: metrics.debtPaid, color: "#B879E0" });
   const filtered = filterLedger(data.transactions, data.categories, { period: ledgerPeriod, type: typeFilter, search });
   const availablePeriods = ledgerPeriods(data.transactions, monthKey);
   const hasLedgerFilters = search.trim() !== "" || typeFilter !== "all" || ledgerPeriod !== "all";
   const visibleHelp = HELP_SECTIONS.filter(section => (section.title + " " + section.summary + " " + section.items.join(" ")).toLowerCase().includes(helpSearch.toLowerCase()));
   const scoreTone = metrics.score === null ? "neutral" : metrics.score >= 85 ? "success" : metrics.score >= 70 ? "good" : metrics.score >= 50 ? "warning" : "danger";
   const scoreLabel = metrics.score === null ? "Sin datos" : metrics.score >= 85 ? "Óptimo" : metrics.score >= 70 ? "Bueno" : metrics.score >= 50 ? "Atención" : "Crítico";
+
+  function selectPeriod(value: string) {
+    stateOrder.current.invalidate();
+    setMonthKey(value);
+    if (ledgerPeriod !== "all") setLedgerPeriod(value);
+    setData(null);
+  }
 
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
@@ -574,8 +556,9 @@ export default function Home() {
         </TabsList>
 
         <div className="budget-workspace">
-          <div className="period-switch"><Button variant="outline" disabled={saving || sheetLoading} onClick={() => { setMonthKey(shiftPeriod(monthKey, -1)); setData(null); }}>Anterior</Button><label>Periodo presupuestario<input type="month" value={monthKey} min="2000-01" max="2100-12" disabled={saving || sheetLoading} onChange={e => { if (e.target.value) { setMonthKey(e.target.value); setData(null); } }} /></label><Button variant="outline" disabled={saving || sheetLoading} onClick={() => { setMonthKey(shiftPeriod(monthKey, 1)); setData(null); }}>Siguiente</Button></div>
-          <BudgetPeriodSettings key={monthKey} error={error} period={data.period} profile={data.budgetProfile} transactions={data.transactions} theme={theme} disabled={saving || sheetLoading} onSave={payload => mutate(payload, "Presupuesto del periodo actualizado")} />
+          <div className={"data-freshness " + (stale ? "stale" : "")} role="status"><span>{saving ? "Guardando cambios…" : refreshing ? "Actualizando datos…" : stale ? "Datos sin confirmar. La vista puede estar desactualizada." : "Datos actualizados · " + updatedAt}</span><Button variant="outline" disabled={saving || refreshing || sheetLoading} onClick={() => void load()}><RefreshCw className={refreshing ? "spin" : ""} />{stale ? "Reintentar actualización" : "Actualizar"}</Button></div>
+          <div className="period-switch"><Button variant="outline" disabled={saving || sheetLoading || refreshing} onClick={() => selectPeriod(shiftPeriod(monthKey, -1))}>Anterior</Button><label>Periodo presupuestario<input type="month" value={monthKey} min="2000-01" max="2100-12" disabled={saving || sheetLoading || refreshing} onChange={e => { if (e.target.value) selectPeriod(e.target.value); }} /></label><Button variant="outline" disabled={saving || sheetLoading || refreshing} onClick={() => selectPeriod(shiftPeriod(monthKey, 1))}>Siguiente</Button></div>
+          <BudgetPeriodSettings key={monthKey} error={error} period={data.period} profile={data.budgetProfile} categories={data.categories} transactions={data.transactions} theme={theme} disabled={saving || sheetLoading || refreshing} onSave={payload => mutate(payload, "Presupuesto del periodo guardado")} />
           {pendingMovements.length > 0 && <div className="inline-alert"><AlertCircle /><div><strong>{pendingMovements.length} gastos pendientes de vincular · {currency2.format(pendingAmount)}</strong><p>Ya cuentan en el total gastado. En la columna Categoría puedes vincularlos o actualizar Gastos Programados.</p></div><Button variant="outline" onClick={() => { showAllMovements(); setLedgerPeriod(monthKey); setTypeFilter("expense"); }}>Revisar gastos</Button></div>}
         </div>
 
@@ -584,12 +567,12 @@ export default function Home() {
           {!metrics.setupComplete && <section className="setup-banner"><div className="setup-icon"><Sparkles /></div><div><strong>Configura tu plan inicial</strong><p>Completa ingreso, ahorro y presupuestos para activar el MIDAS Score y el forecast.</p></div><Button className="gold-button" onClick={() => setTab("plan")}>Configurar <ChevronRight /></Button></section>}
 
           <section className="kpi-grid">
-            <Kpi title="Ingresos del periodo" value={currency.format(metrics.actualIncome)} note="Solo ingresos registrados; no suma el plan" icon={<ArrowUpRight />} tone="blue" />
-            <Kpi title="Presupuesto total" value={currency.format(metrics.budget)} note="Distribuido por categorías" icon={<Target />} tone="gold" />
-            <Kpi title="Gasto real" value={currency.format(metrics.spent)} note={(metrics.budget ? Math.round(metrics.spent / metrics.budget * 100) : 0) + "% del presupuesto"} icon={<ArrowDownRight />} tone="red" />
-            <Kpi title="Saldo disponible" value={currency.format(metrics.available)} note="Después de gastos y deuda" icon={<WalletCards />} tone={metrics.available >= 0 ? "green" : "red"} />
+            <Kpi title="Ingresos del periodo" value={currency2.format(metrics.actualIncome)} note="Solo ingresos registrados; no suma el plan" icon={<ArrowUpRight />} tone="blue" />
+            <Kpi title="Presupuesto total" value={currency2.format(metrics.budget)} note="Distribuido por categorías" icon={<Target />} tone="gold" />
+            <Kpi title="Gasto real" value={currency2.format(metrics.outflow)} note={"Gastos: " + currency2.format(metrics.spent) + " · Deuda: " + currency2.format(metrics.debtPaid)} icon={<ArrowDownRight />} tone="red" />
+            <Kpi title="Saldo disponible" value={currency2.format(metrics.available)} note="Después de gastos y deuda" icon={<WalletCards />} tone={metrics.available >= 0 ? "green" : "red"} />
             <Kpi title="Deuda total" value={currency.format(metrics.totalDebt)} note={currency.format(metrics.debtPaid) + " pagado este mes"} icon={<CreditCard />} tone="purple" />
-            <Kpi title="Forecast de salida" value={currency.format(metrics.forecast)} note="Ritmo actual + deuda pendiente" icon={<TrendingUp />} tone="cyan" />
+            <Kpi title="Forecast de salida" value={currency.format(metrics.forecast)} note="Ritmo de gastos + deuda pagada y pendiente" icon={<TrendingUp />} tone="cyan" />
           </section>
 
           <section className="dashboard-grid">
@@ -603,13 +586,13 @@ export default function Home() {
 
             <article className="panel plan-actual-panel">
               <PanelTitle eyebrow="EJECUCIÓN" title="Plan vs. real" extra={<span className="small-meta">{metrics.categoryRows.length} categorías</span>} />
-              <div className="category-bars">{metrics.categoryRows.slice(0, 6).map(row => <CategoryBar key={row.id} row={row} />)}</div>
+              <div className="category-bars">{metrics.categoryRows.map(row => <CategoryBar key={row.id} row={row} />)}</div>
               {!metrics.categoryRows.length && <EmptyState icon={<Target />} title="Sin categorías" text="Agrega categorías a tu plan mensual." />}
               <button className="panel-link" onClick={() => setTab("plan")}>Ver presupuesto completo <ChevronRight /></button>
             </article>
 
             <article className="panel chart-panel">
-              <PanelTitle eyebrow="RITMO DEL MES" title="Gasto acumulado" extra={<span className="small-meta">{currency.format(metrics.spent)}</span>} />
+              <PanelTitle eyebrow="RITMO DEL MES" title="Gasto acumulado" extra={<span className="small-meta">{currency2.format(metrics.outflow)}</span>} />
               <div className="chart-area">
                 {trend.length ? <ResponsiveContainer width="100%" height="100%"><AreaChart data={trend} margin={{ top: 8, right: 8, bottom: 0, left: -18 }}><defs><linearGradient id="goldFade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#d2ad62" stopOpacity=".42" /><stop offset="1" stopColor="#d2ad62" stopOpacity="0" /></linearGradient></defs><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--chart-grid)" /><XAxis dataKey="day" tickLine={false} axisLine={false} tick={{ fill: "var(--muted-text)", fontSize: 11 }} /><YAxis tickFormatter={v => String(Math.round(v / 1000)) + "k"} tickLine={false} axisLine={false} tick={{ fill: "var(--muted-text)", fontSize: 11 }} /><ChartTooltip formatter={v => currency.format(Number(v))} contentStyle={{ background: "var(--panel-solid)", border: "1px solid var(--line)", borderRadius: 10 }} /><Area type="monotone" dataKey="amount" stroke="#d2ad62" strokeWidth={2.5} fill="url(#goldFade)" /></AreaChart></ResponsiveContainer> : <EmptyState icon={<BarChart3 />} title="Aún sin movimientos" text="El gráfico aparecerá cuando registres el primer gasto." />}
               </div>
@@ -619,7 +602,7 @@ export default function Home() {
               <PanelTitle eyebrow="COMPOSICIÓN" title="Gasto por categoría" />
               <div className="donut-content">
                 <div className="donut-chart">{pie.length ? <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={pie} dataKey="value" innerRadius={54} outerRadius={78} paddingAngle={3} stroke="none">{pie.map(item => <Cell key={item.name} fill={item.color} />)}</Pie><ChartTooltip formatter={v => currency.format(Number(v))} contentStyle={{ background: "var(--panel-solid)", border: "1px solid var(--line)", borderRadius: 10 }} /></PieChart></ResponsiveContainer> : <div className="empty-donut"><CircleDollarSign /></div>}</div>
-                <div className="legend-list">{pie.slice(0, 5).map(item => <div key={item.name}><span style={{ background: item.color }} /><p>{item.name}</p><strong>{currency.format(item.value)}</strong></div>)}{!pie.length && <p className="muted-copy">Sin distribución disponible.</p>}</div>
+                <div className="legend-list">{pie.map(item => <div key={item.name}><span style={{ background: item.color }} /><p>{item.name}</p><strong>{currency.format(item.value)}</strong></div>)}{!pie.length && <p className="muted-copy">Sin distribución disponible.</p>}</div>
               </div>
             </article>
 
@@ -630,17 +613,18 @@ export default function Home() {
         <TabsContent value="plan" className="page-content">
           <PageHeading eyebrow="EL PLAN DEL MES" title="Gastos programados" subtitle="Asigna cada sol antes de gastarlo y detecta compromisos excesivos." compact extra={<Button className="gold-button" onClick={() => openCategory()}><Plus /> Categoría</Button>} />
           <section className="plan-summary panel">
-            <FieldMoney key={monthKey + ":income:" + data.month.income} label="Ingreso esperado" id="income" value={data.month.income} onBlur={value => mutate({ action: "set_month", income: value, savingsTarget: data.month.savingsTarget }, "Ingreso actualizado")} />
+            <FieldMoney key={monthKey + ":income:" + data.month.income} label="Ingreso esperado" id="income" value={data.month.income} onBlur={value => mutate({ action: "set_month", income: value }, "Ingreso actualizado")} />
             <div className="plan-operator">−</div><SummaryNumber label="Presupuesto" value={metrics.budget} />
-            <div className="plan-operator">−</div><FieldMoney key={monthKey + ":savings:" + data.month.savingsTarget} label="Ahorro objetivo" id="savings" value={data.month.savingsTarget} onBlur={value => mutate({ action: "set_month", income: data.month.income, savingsTarget: value }, "Objetivo actualizado")} />
+            <div className="plan-operator">−</div><FieldMoney key={monthKey + ":savings:" + data.month.savingsTarget} label="Ahorro objetivo" id="savings" value={data.month.savingsTarget} onBlur={value => mutate({ action: "set_month", savingsTarget: value }, "Objetivo actualizado")} />
             <div className="plan-operator">=</div><SummaryNumber label="Saldo planificado" value={data.month.income - metrics.budget - data.month.savingsTarget} result />
           </section>
           {data.month.income > 0 && data.month.income - metrics.budget - data.month.savingsTarget < 0 && <div className="inline-alert"><AlertCircle /><div><strong>Los compromisos superan tu ingreso</strong><p>Reduce el presupuesto o el ahorro objetivo en {currency.format(Math.abs(data.month.income - metrics.budget - data.month.savingsTarget))}.</p></div></div>}
           <section className="panel budget-table-panel">
             <PanelTitle eyebrow="CATEGORÍAS" title="Presupuesto por categoría" extra={<span className="small-meta">Se guarda al salir del campo</span>} />
             <Table className="midas-table"><TableHeader><TableRow><TableHead>Categoría</TableHead><TableHead>Grupo</TableHead><TableHead>Tipo</TableHead><TableHead className="align-right">Programado</TableHead><TableHead className="align-right">Real</TableHead><TableHead>Estado</TableHead><TableHead /></TableRow></TableHeader>
-              <TableBody>{metrics.categoryRows.map(row => <TableRow key={row.id}><TableCell><CategoryName category={row} /></TableCell><TableCell className="muted-cell">{row.groupName}</TableCell><TableCell><span className="type-chip">{row.kind === "fixed" ? "Fijo" : row.kind === "discretionary" ? "Discrecional" : "Variable"}</span></TableCell><TableCell><div className="inline-money"><span>S/</span><input key={monthKey + ":" + row.budget} type="number" min="0" step="0.01" defaultValue={row.budget} onBlur={e => { if (e.target.value !== "" && Number(e.target.value) !== row.budget) void mutate({ action: "budget_category", id: row.id, budget: Number(e.target.value) }); }} /></div></TableCell><TableCell className="align-right strong-cell">{currency.format(row.actual)}</TableCell><TableCell><span className={"status-pill " + row.status.tone}><span />{row.status.label}</span></TableCell><TableCell><div className="row-actions"><Button variant="ghost" size="icon-sm" aria-label={"Editar " + row.name} onClick={() => openCategory(row)}><Pencil /></Button><Button variant="ghost" size="icon-sm" aria-label={"Quitar del periodo " + row.name} onClick={() => mutate({ action: "budget_remove", id: row.id }, "Categoría retirada solo de este periodo")}><Trash2 /></Button></div></TableCell></TableRow>)}</TableBody>
+              <TableBody>{metrics.categoryRows.map(row => <TableRow key={row.id}><TableCell><CategoryName category={row} /></TableCell><TableCell className="muted-cell">{row.groupName}</TableCell><TableCell><span className="type-chip">{row.kind === "fixed" ? "Fijo" : row.kind === "discretionary" ? "Discrecional" : "Variable"}</span></TableCell><TableCell><div className="inline-money"><span>S/</span><input disabled={saving || refreshing || sheetLoading} aria-label={"Presupuesto de " + row.name} key={monthKey + ":" + row.budget} type="number" min="0" step="0.01" defaultValue={row.budget} onBlur={e => { if (e.target.value !== "" && Number(e.target.value) !== row.budget) void mutate({ action: "budget_category", id: row.id, budget: Number(e.target.value) }); }} /></div></TableCell><TableCell className="align-right strong-cell">{currency2.format(row.actual)}</TableCell><TableCell><span className={"status-pill " + row.status.tone}><span />{row.status.label}</span></TableCell><TableCell><div className="row-actions"><Button variant="ghost" size="icon-sm" aria-label={"Editar " + row.name} onClick={() => openCategory(row)}><Pencil /></Button><Button variant="ghost" size="icon-sm" aria-label={"Quitar del periodo " + row.name} onClick={() => mutate({ action: "budget_remove", id: row.id }, "Categoría retirada solo de este periodo")}><Trash2 /></Button></div></TableCell></TableRow>)}</TableBody>
             </Table>
+            {!metrics.categoryRows.length && <EmptyState icon={<Target />} title="No hay gastos programados guardados" text="El presupuesto aún no está cargado en este periodo. Revisa el plan inicial en el panel superior o agrega una categoría." />}
           </section>
         </TabsContent>
 
@@ -650,7 +634,7 @@ export default function Home() {
           <section className="ledger-toolbar panel">
             <div className="search-box"><Search /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar nombre, código o categoría…" aria-label="Buscar movimientos" /></div>
             <Select value={typeFilter} onValueChange={setTypeFilter}><SelectTrigger className="filter-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos los tipos</SelectItem><SelectItem value="expense">Gastos</SelectItem><SelectItem value="income">Ingresos</SelectItem><SelectItem value="debt_payment">Pagos de deuda</SelectItem></SelectContent></Select>
-            <select className="ledger-period" aria-label="Periodo de los movimientos" value={ledgerPeriod} onChange={event => setLedgerPeriod(event.target.value)}>
+            <select className="ledger-period" aria-label="Periodo de los movimientos" value={ledgerPeriod} onChange={event => { const value = event.target.value; setLedgerPeriod(value); if (value !== "all" && value !== monthKey) { stateOrder.current.invalidate(); setMonthKey(value); setData(null); } }} disabled={saving || sheetLoading || refreshing}>
               <option value="all">Todos los periodos</option>
               {availablePeriods.map(period => <option key={period} value={period}>{monthLabel(period)}</option>)}
             </select>
@@ -659,14 +643,8 @@ export default function Home() {
             <Button variant="outline" onClick={exportCsv}><Download /> Exportar</Button>
           </section>
           <section className="panel ledger-panel">
-            <div className="ledger-summary"><p role="status">{filtered.length} de {data.transactions.length} movimientos · {ledgerPeriod === "all" ? "Todos los periodos" : monthLabel(ledgerPeriod)}<span>El Dashboard utiliza el periodo presupuestario seleccionado y su fecha de sueldo.</span></p>{hasLedgerFilters && <Button variant="outline" onClick={showAllMovements}>Quitar filtros</Button>}</div>
-            <Table className="midas-table ledger-table"><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Nombre</TableHead><TableHead className="align-right">Ingreso</TableHead><TableHead className="align-right">Gasto</TableHead><TableHead>Categoría</TableHead><TableHead><span className="sr-only">Acciones</span></TableHead></TableRow></TableHeader>
-              <TableBody>{filtered.map(t => {
-                const category = data.categories.find(c => c.id === t.categoryId);
-                const debt = data.debts.find(d => d.id === t.debtId);
-                return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</TableCell><TableCell className="strong-cell"><span className="transaction-name">{t.description}</span><span className="transaction-origin"><code className="transaction-code">{t.code || "Pendiente"}</code><span title={t.sourceName || "Registro manual"}>{t.sourceType === "spreadsheet" ? "Hoja · " + (t.sourceName?.split(" · ").slice(1).join(" · ") || "Spreadsheet") : "Manual"}</span></span></TableCell><TableCell className="align-right amount-cell positive">{t.type === "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell className="align-right amount-cell">{t.type !== "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell>{t.type === "expense" ? <BudgetCategoryPicker categories={data.categories} profile={data.budgetProfile} date={t.date} original={t.sourceCategory || category?.name || "Sin categoría"} categoryId={t.categoryId} transactionId={t.id} sourceId={t.sourceId} pending={t.categoryPending} error={error} observedAmount={t.amount} theme={theme} disabled={saving || sheetLoading} onSave={payload => mutate(payload, "Categoría vinculada al presupuesto")} /> : category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
-              })}</TableBody>
-            </Table>
+            <div className="ledger-summary"><p role="status">{filtered.length} de {data.transactions.length} movimientos · {ledgerPeriod === "all" ? "Todos los periodos" : monthLabel(ledgerPeriod)}<span>{ledgerPeriod === "all" ? "Esta vista incluye otros periodos. El Dashboard muestra " + monthLabel(monthKey) + "." : "Mismo periodo que el Dashboard. Los totales de esta vista respetan los filtros."}</span></p><div className="ledger-view-actions">{ledgerPeriod === "all" && <Button variant="outline" onClick={() => { setLedgerPeriod(monthKey); setTypeFilter("all"); setSearch(""); }}>Ver periodo del Dashboard</Button>}{hasLedgerFilters && <Button variant="outline" onClick={showAllMovements}>Quitar filtros</Button>}</div></div>
+            <ExpenseLedger key={ledgerPeriod + ":" + typeFilter + ":" + search} rows={filtered} categories={data.categories} debts={data.debts} profile={data.budgetProfile} theme={theme} error={error} disabled={saving || sheetLoading || refreshing} onSave={payload => mutate(payload, "Categoría vinculada al presupuesto")} onEdit={openQuick} onDelete={setDeleteTxn} />
             {!filtered.length && <EmptyState icon={<ReceiptText />} title={data.transactions.length ? "No hay resultados con estos filtros" : "No hay movimientos"} text={data.transactions.length ? "Hay movimientos guardados. Quita los filtros para ver el histórico completo." : "Registra tu primer ingreso o gasto, o sincroniza una pestaña."} action={data.transactions.length ? <Button className="gold-button" onClick={showAllMovements}>Ver todos los movimientos</Button> : <Button className="gold-button" onClick={() => openQuick()}><Plus /> Movimiento</Button>} />}
           </section>
         </TabsContent>
@@ -694,7 +672,7 @@ export default function Home() {
         </TabsContent>
 
         <TabsContent value="help" className="page-content">
-          <PageHeading eyebrow="CENTRO DE ASISTENCIA" title="HELP" subtitle="Respuestas rápidas para operar MIDAS con claridad y trazabilidad." compact extra={<div className="version-badge">MIDAS Beta · v0.3.0</div>} />
+          <PageHeading eyebrow="CENTRO DE ASISTENCIA" title="HELP" subtitle="Respuestas rápidas para operar MIDAS con claridad y trazabilidad." compact extra={<div className="version-badge">MIDAS Beta · v0.4.0</div>} />
           <section className="help-hero panel">
             <div className="help-hero-icon"><CircleHelp /></div>
             <div><h2>¿Qué necesitas resolver?</h2><p>Busca una función o explora las guías por módulo.</p></div>
@@ -820,7 +798,7 @@ function CategoryName({ category }: { category: Pick<Category, "name" | "color">
 
 function CategoryBar({ row }: { row: CategoryMetric }) {
   const width = row.budget > 0 ? Math.min(100, row.percent) : 0;
-  return <div className="category-bar"><div className="bar-top"><CategoryName category={row} /><div><strong>{currency.format(row.actual)}</strong><span>/ {currency.format(row.budget)}</span></div></div><div className="bar-track"><div style={{ width: width + "%", background: row.percent > 100 ? "#ef6a6a" : row.color }} /></div><div className="bar-bottom"><span>{Number.isFinite(row.percent) ? Math.round(row.percent) + "% ejecutado" : "Sin presupuesto"}</span><span className={row.status.tone}>{row.status.label}</span></div></div>;
+  return <div className="category-bar"><div className="bar-top"><CategoryName category={row} /><div><strong>{currency2.format(row.actual)}</strong><span>/ {currency2.format(row.budget)}</span></div></div><div className="bar-track"><div style={{ width: width + "%", background: row.percent > 100 ? "#ef6a6a" : row.color }} /></div><div className="bar-bottom"><span>{Number.isFinite(row.percent) ? Math.round(row.percent) + "% ejecutado" : "Sin presupuesto"}</span><span className={row.status.tone}>{row.status.label}</span></div></div>;
 }
 
 function EmptyState({ icon, title, text, action }: { icon: React.ReactNode; title: string; text: string; action?: React.ReactNode }) {
@@ -828,7 +806,7 @@ function EmptyState({ icon, title, text, action }: { icon: React.ReactNode; titl
 }
 
 function FieldMoney({ label, id, value, onBlur }: { label: string; id: string; value: number; onBlur: (value: number) => void }) {
-  return <div className="form-field"><label htmlFor={id}>{label}</label><div className="money-input"><span>S/</span><input id={id} type="number" min="0" defaultValue={value} onBlur={e => onBlur(Number(e.target.value))} /></div></div>;
+  return <div className="form-field"><label htmlFor={id}>{label}</label><div className="money-input"><span>S/</span><input id={id} type="number" min="0" defaultValue={value} step="0.01" onBlur={e => { if (!e.target.validity.valid || e.target.value === "") { e.target.value = String(value); return; } if (Number(e.target.value) !== value) onBlur(Number(e.target.value)); }} /></div></div>;
 }
 
 function SummaryNumber({ label, value, result }: { label: string; value: number; result?: boolean }) {
@@ -864,7 +842,7 @@ function Advisor({ metrics, debtCount }: { metrics: Metrics; debtCount: number }
   const over = [...metrics.categoryRows].sort((a, b) => b.percent - a.percent).find(c => c.percent > 100);
   if (over) {
     tone = "danger"; title = over.name + " está sobre el presupuesto";
-    observation = "Se ejecutó " + Math.round(over.percent) + "% del monto programado.";
+    observation = Number.isFinite(over.percent) ? "Se ejecutó " + Math.round(over.percent) + "% del monto programado." : "Hay gastos en una categoría con presupuesto cero.";
     impact = "La desviación actual es " + currency.format(Math.abs(over.available)) + ".";
     recommendation = "Revisa los próximos consumos o reasigna presupuesto conscientemente.";
   } else if (metrics.setupComplete && metrics.forecast > metrics.budget) {

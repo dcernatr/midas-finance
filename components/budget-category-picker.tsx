@@ -4,11 +4,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from "@/components/ui/button";
 import { type BudgetCategory, type BudgetProfile, isPlanned, periodForDate, originalScope } from "@/lib/budgeting";
 
-export function BudgetCategoryPicker({ categories, profile, date, original, categoryId, transactionId, sourceId, sourceUrl, pending, onSave, disabled, theme = "dark", error, observedAmount }: {
+export function BudgetCategoryPicker({ categories, profile, date, original, categoryId, transactionId, sourceId, sourceUrl, pending, onSave, disabled, theme = "dark", error, observedAmount, compact = false }: {
   categories: BudgetCategory[]; profile: BudgetProfile; date: string; original: string; categoryId?: string | null;
   transactionId?: string; sourceId?: string | null; sourceUrl?: string; pending?: boolean;
   onSave: (payload: Record<string, unknown>) => Promise<boolean>; disabled?: boolean; theme?: string; error?: string;
-  observedAmount?: number;
+  observedAmount?: number; compact?: boolean;
 }) {
   const [choice, setChoice] = useState("");
   const [name, setName] = useState("");
@@ -41,8 +41,8 @@ export function BudgetCategoryPicker({ categories, profile, date, original, cate
       <option value="current">Agregar actual: {original || "sin nombre"}</option>
       <option value="new">Agregar nueva…</option>
     </select>
-    {pending && <small className="category-pending">Pendiente de vincular · Actualiza programados</small>}
-    {original && <small>Hoja / original: {original}</small>}
+    {pending && <small className="category-pending">{compact ? "Pendiente de vincular" : "Pendiente de vincular · Actualiza programados"}</small>}
+    {!compact && original && <small>Hoja / original: {original}</small>}
     <Dialog open={!!choice} onOpenChange={open => { if (!open && !busy) setChoice(""); }}>
       <DialogContent className="midas-dialog budget-dialog" data-theme={theme}>
         <DialogHeader><DialogTitle>{creating ? "Agregar a gastos programados" : "Vincular categoría"}</DialogTitle><DialogDescription>Periodo {period}. Se conserva la categoría original y no se modifican los importes del gasto.</DialogDescription></DialogHeader>

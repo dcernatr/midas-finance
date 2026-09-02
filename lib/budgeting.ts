@@ -69,6 +69,18 @@ export function planFor(profile: BudgetProfile, key: string): Record<string, num
 export function isPlanned(profile: BudgetProfile, key: string, id: string | null | undefined) {
   return !!id && Object.hasOwn(planFor(profile, key), id);
 }
+export function initialPlanReview(categories: BudgetCategory[], profile: BudgetProfile) {
+  const plan = planFor(profile, "2026-09");
+  const rows = INITIAL_PLAN.map(item => {
+    const category = categories.find(c => categoryKey(c.name) === categoryKey(item.name));
+    const current = category && Object.hasOwn(plan, category.id) ? plan[category.id] : null;
+    const conflict = category?.archived ? "Categoría archivada" : current !== null && current !== item.budget ? "Importe distinto" : null;
+    return { ...item, current, conflict, missing: current === null && !conflict };
+  });
+  const extras = categories.filter(c => !c.archived && Object.hasOwn(plan, c.id) && !INITIAL_PLAN.some(item => categoryKey(item.name) === categoryKey(c.name)));
+  const dateConflict = !!profile.starts["2026-09"] && profile.starts["2026-09"] !== "2026-08-28";
+  return { rows, extras, dateConflict, conflicts: rows.filter(r => r.conflict), missing: rows.filter(r => r.missing) };
+}
 export function originalScope(sourceId: string | null | undefined) {
   return sourceId?.match(/^v2:([a-f0-9]{32}):/)?.[1] || "";
 }
