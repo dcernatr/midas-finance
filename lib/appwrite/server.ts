@@ -10,6 +10,7 @@ export const APPWRITE_TABLES = {
   categories: "midas_categories",
   debts: "midas_debts",
   transactions: "midas_transactions",
+  sequences: "midas_transaction_sequences",
   sources: "midas_spreadsheet_sources",
   syncLogs: "midas_spreadsheet_sync_logs",
   activity: "midas_activity_logs",
@@ -64,6 +65,17 @@ export async function listRows(
 
 export async function findRow(tables: TablesDB, tableId: string, queries: string[]) {
   return (await listRows(tables, tableId, queries, 1))[0] ?? null;
+}
+
+export async function listAllRows(tables: TablesDB, tableId: string, queries: string[] = []) {
+  const rows: AppwriteRow[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await listRows(tables, tableId, [...queries, ...(cursor ? [Query.cursorAfter(cursor)] : [])], 100);
+    rows.push(...page);
+    if (page.length < 100) return rows;
+    cursor = page[page.length - 1].$id;
+  }
 }
 
 export function createRow(tables: TablesDB, tableId: string, rowId: string, data: Record<string, unknown>, transactionId?: string) {

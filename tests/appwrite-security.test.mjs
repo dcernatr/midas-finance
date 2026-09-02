@@ -4,7 +4,7 @@ import test from "node:test";
 
 const setupUrl = new URL("../scripts/setup-appwrite.mjs", import.meta.url);
 
-test("defines an isolated nine-table MIDAS database", async () => {
+test("defines nine isolated base tables plus a private MIDAS code sequence", async () => {
   const source = await readFile(setupUrl, "utf8");
   const tables = [
     "midas_users", "midas_financial_months", "midas_categories", "midas_debts",
@@ -14,6 +14,10 @@ test("defines an isolated nine-table MIDAS database", async () => {
   for (const table of tables) assert.match(source, new RegExp(`id: "${table}"`));
   assert.match(source, /permissions: \[\], rowSecurity: false/);
   assert.doesNotMatch(source, /terran|pomoboxing/i);
+  const migration = await readFile(new URL("../scripts/ledger-schema.mjs", import.meta.url), "utf8");
+  assert.match(source, /ensureLedgerSchema\(tables, databaseId\)/);
+  assert.match(migration, /tableId: "midas_transaction_sequences"/);
+  assert.match(migration, /permissions: \[\], rowSecurity: false/);
 });
 
 test("keeps the Appwrite key server-only", async () => {

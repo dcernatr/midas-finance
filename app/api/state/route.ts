@@ -2,10 +2,13 @@ import type { TablesDB } from "node-appwrite";
 import { authErrorResponse, ensureContext } from "../../../lib/auth";
 import {
   APPWRITE_DATABASE_ID, APPWRITE_TABLES, Query, createRow, deleteRow, findRow,
-  listRows, updateRow,
+  listRows, listAllRows, updateRow,
 } from "../../../lib/appwrite/server";
 import { mapCategory, mapDebt, mapMonth, mapSource, mapTransaction } from "../../../lib/midas-data";
 import type { MidasUser } from "../../../lib/midas-data";
+import { withMovementCode, ensureMovementCodes } from "../../../lib/ledger-store";
+import { codePrefix } from "../../../lib/ledger";
+import { normalizeDate } from "../../../lib/spreadsheet";
 
 const DEFAULT_CATEGORIES = [
   ["Vivienda", "Necesidades", "#CBA65B", "fixed"],
@@ -50,14 +53,14 @@ async function readState(tables: TablesDB, userId: string, monthKey: string, cur
   const [months, categories, transactions, debts, sources] = await Promise.all([
     listRows(tables, APPWRITE_TABLES.months, [Query.equal("user_id", userId), Query.equal("month_key", monthKey)], 1),
     listRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", userId)]),
-    listRows(tables, APPWRITE_TABLES.transactions, [Query.equal("user_id", userId), Query.orderDesc("date")]),
+    listAllRows(tables, APPWRITE_TABLES.transactions, [Query.equal("user_id", userId), Query.orderDesc("date")]),
     listRows(tables, APPWRITE_TABLES.debts, [Query.equal("user_id", userId), Query.orderDesc("$createdAt")]),
     listRows(tables, APPWRITE_TABLES.sources, [Query.equal("user_id", userId)], 1),
   ]);
   return {
     month: months[0] ? mapMonth(months[0]) : null,
     categories: categories.map(mapCategory),
-    transactions: transactions.map(mapTransaction),
+    transactions: (await ensureMovementCodes(tables, userId, transactions)).map(mapTransaction),
     debts: debts.map(mapDebt),
     spreadsheetSource: sources[0] ? mapSource(sources[0]) : null,
     currentUser: { email: currentUser.email, displayName: currentUser.displayName, role: currentUser.role, status: currentUser.status },
@@ -69,20 +72,16 @@ async function recordDebtPayment(tables: TablesDB, userId: string, values: {
 }) {
   const debt = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.debts, rowId: values.debtId });
   if (debt.user_id !== userId) throw new Error("La deuda no existe.");
-  const transaction = await tables.createTransaction();
-  try {
+  await withMovementCode(tables, userId, values.date, "debt_payment", async (code, transactionId) => {
+    const currentDebt = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.debts, rowId: values.debtId, transactionId });
     await updateRow(tables, APPWRITE_TABLES.debts, values.debtId, {
-      current_balance: Math.max(0, Number(debt.current_balance) - values.amount),
-    }, transaction.$id);
+      current_balance: Math.max(0, Number(currentDebt.current_balance) - values.amount),
+    }, transactionId);
     await createRow(tables, APPWRITE_TABLES.transactions, values.id, {
       user_id: userId, date: values.date, description: values.description, amount: values.amount,
-      debt_id: values.debtId, type: "debt_payment", account: values.account, source_type: "manual",
-    }, transaction.$id);
-    await tables.updateTransaction({ transactionId: transaction.$id, commit: true });
-  } catch (error) {
-    await tables.updateTransaction({ transactionId: transaction.$id, rollback: true }).catch(() => undefined);
-    throw error;
-  }
+      debt_id: values.debtId, type: "debt_payment", account: values.account, source_type: "manual", midas_code: code,
+    }, transactionId);
+  });
 }
 
 async function deleteTransaction(tables: TablesDB, userId: string, transactionId: string) {
@@ -155,23 +154,25 @@ export async function POST(request: Request) {
       if (category.user_id === user.id) await updateRow(tables, APPWRITE_TABLES.categories, categoryId, { archived: true });
     } else if (action === "add_transaction") {
       const amount = Number(payload.amount);
-      if (!(amount > 0)) return Response.json({ error: "Ingresa un monto mayor a cero." }, { status: 400 });
+      if (!Number.isFinite(amount) || !(amount > 0)) return Response.json({ error: "Ingresa un monto válido mayor a cero." }, { status: 400 });
       const type = String(payload.type ?? "expense");
+      if (!["income", "expense", "debt_payment"].includes(type)) return Response.json({ error: "Tipo de movimiento inválido." }, { status: 400 });
       const debtId = payload.debtId ? String(payload.debtId) : "";
+      if (type === "debt_payment" && !debtId) return Response.json({ error: "Selecciona una deuda." }, { status: 400 });
       const values = {
         id: id("txn"), debtId,
-        date: String(payload.date ?? new Date().toISOString().slice(0, 10)),
+        date: normalizeDate(String(payload.date ?? new Date().toISOString().slice(0, 10))),
         description: String(payload.description ?? "Movimiento").trim() || "Movimiento",
         amount, account: String(payload.account ?? "Efectivo"),
       };
       if (type === "debt_payment" && debtId) {
         await recordDebtPayment(tables, user.id, values);
       } else {
-        await createRow(tables, APPWRITE_TABLES.transactions, values.id, {
+        await withMovementCode(tables, user.id, values.date, type, (code, transactionId) => createRow(tables, APPWRITE_TABLES.transactions, values.id, {
           user_id: user.id, date: values.date, description: values.description, amount,
           category_id: payload.categoryId ? String(payload.categoryId) : undefined,
-          debt_id: debtId || undefined, type, account: values.account, source_type: "manual",
-        });
+          debt_id: debtId || undefined, type, account: values.account, source_type: "manual", midas_code: code,
+        }, transactionId));
       }
     } else if (action === "delete_transaction") {
       await deleteTransaction(tables, user.id, String(payload.id ?? ""));
@@ -182,12 +183,18 @@ export async function POST(request: Request) {
       const existing = mapTransaction(row);
       if (existing.type === "debt_payment") return Response.json({ error: "Para modificar un pago de deuda, elimínalo y regístralo nuevamente." }, { status: 400 });
       const amount = Number(payload.amount);
-      if (!(amount > 0)) return Response.json({ error: "Ingresa un monto mayor a cero." }, { status: 400 });
-      await updateRow(tables, APPWRITE_TABLES.transactions, transactionId, {
-        date: String(payload.date ?? existing.date), description: String(payload.description ?? existing.description).trim() || existing.description,
+      if (!Number.isFinite(amount) || !(amount > 0)) return Response.json({ error: "Ingresa un monto válido mayor a cero." }, { status: 400 });
+      const date = normalizeDate(String(payload.date ?? existing.date));
+      const type = String(payload.type ?? existing.type);
+      if (!["income", "expense"].includes(type)) return Response.json({ error: "Tipo de movimiento inválido." }, { status: 400 });
+      const changes = {
+        date, description: String(payload.description ?? existing.description).trim() || existing.description,
         amount, category_id: payload.categoryId ? String(payload.categoryId) : null,
-        type: String(payload.type ?? existing.type), account: String(payload.account ?? existing.account),
-      });
+        type, account: String(payload.account ?? existing.account),
+      };
+      if (!existing.code || !existing.code.startsWith(codePrefix(date, type) + "-")) {
+        await withMovementCode(tables, user.id, date, type, (code, txId) => updateRow(tables, APPWRITE_TABLES.transactions, transactionId, { ...changes, midas_code: code }, txId));
+      } else await updateRow(tables, APPWRITE_TABLES.transactions, transactionId, changes);
     } else if (action === "add_debt") {
       const name = String(payload.name ?? "").trim();
       const currentBalance = Number(payload.currentBalance);

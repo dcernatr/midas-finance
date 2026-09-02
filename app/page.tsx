@@ -26,15 +26,17 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { MidasCatIcon } from "@/components/midas-cat-icon";
+import { SpreadsheetMapping } from "@/components/spreadsheet-mapping";
+import type { ColumnMapping } from "@/lib/spreadsheet";
 
 type Month = { id: string; monthKey: string; income: number; savingsTarget: number; status: string };
 type Category = { id: string; name: string; groupName: string; budget: number; color: string; kind: string; archived: boolean };
-type Transaction = { id: string; date: string; description: string; amount: number; categoryId: string | null; debtId: string | null; type: string; account: string; subcategory: string | null; paymentMethod: string | null; notes: string | null; sourceType: string; sourceId: string | null; sourceName: string | null; sourceImportedAt: string | null };
+type Transaction = { id: string; code: string | null; date: string; description: string; amount: number; categoryId: string | null; debtId: string | null; type: string; account: string; subcategory: string | null; paymentMethod: string | null; notes: string | null; sourceType: string; sourceId: string | null; sourceName: string | null; sourceImportedAt: string | null };
 type Debt = { id: string; name: string; entity: string; originalAmount: number; currentBalance: number; annualRate: number; minimumPayment: number; plannedPayment: number; dueDay: number; acquiredAt: string; status: string };
 type SpreadsheetSource = { id: string; sourceName: string; sourceUrl: string; columnMapping: string; lastSyncAt: string | null; lastSyncStatus: string; lastRowsDetected: number; lastRowsInserted: number; lastRowsIgnored: number; lastRowsFailed: number };
 type CurrentUser = { email: string; displayName: string | null; role: string; status: string };
 type FinanceState = { month: Month; categories: Category[]; transactions: Transaction[]; debts: Debt[]; spreadsheetSource: SpreadsheetSource | null; currentUser: CurrentUser };
-type SheetMapping = { source_id?: string; date?: string; description?: string; category?: string; subcategory?: string; amount?: string; payment_method?: string; account?: string; notes?: string };
+type SheetMapping = Partial<ColumnMapping>;
 type SheetPreview = { sourceName: string; sheetName: string; headers: string[]; preview: Array<Record<string, string>>; suggestedMapping: SheetMapping };
 type SyncResult = { detected: number; inserted: number; ignored: number; failed: number; errors: Array<{ row: number; reason: string }>; status: string; completedAt: string };
 type CategoryMetric = Category & { actual: number; available: number; percent: number; status: { label: string; tone: string } };
@@ -55,14 +57,9 @@ const HELP_SECTIONS = [
   { id: "start", title: "Primeros pasos", summary: "Qué es MIDAS y cómo preparar tu primer mes.", items: ["Define tu ingreso esperado y objetivo de ahorro.", "Asigna presupuestos a las categorías.", "Registra gastos manualmente o conecta un Spreadsheet.", "Revisa Dashboard, MIDAS Score y Advisor para corregir el rumbo."] },
   { id: "plan", title: "Gastos programados", summary: "Categorías, colores, presupuestos y comparación.", items: ["Cada categoría tiene un monto programado y un color identificador.", "Usa el lápiz para editar nombre, grupo, tipo, color y monto programado.", "Los cambios rápidos de presupuesto se guardan al salir del campo.", "Plan vs. Real utiliza los Gastos Efectivos del mismo mes.", "Las categorías con historial se archivan para preservar trazabilidad."] },
   { id: "ledger", title: "Gastos efectivos", summary: "Registro real consolidado de ingresos y gastos.", items: ["Cada movimiento usa cinco campos claros: Fecha, Nombre, Ingreso, Gasto y Categoría.", "Los movimientos manuales y Spreadsheet conviven en la misma tabla.", "Eliminar un pago de deuda restaura también el saldo de la deuda.", "Los filtros y la exportación trabajan sobre los movimientos visibles."] },
-  { id: "spreadsheet", title: "Cómo conectar un Spreadsheet", summary: "Preparación, pestaña, mapeo, sincronización y errores.", items: ["Publica la hoja o habilita un enlace exportable sin autenticación.", "Usa columnas: ID_MOVIMIENTO | Fecha | Descripción | Categoría | Subcategoría | Monto | Medio_Pago | Cuenta | Nota.", "Pega el enlace y selecciona desde MIDAS la pestaña que contiene los movimientos.", "Valida la vista previa y confirma el mapeo de columnas.", "MIDAS agrega IDs nuevos e ignora IDs ya importados: nunca duplica.", "Las filas inválidas se informan sin detener las filas válidas.", "Cambiar la fuente conserva todo el histórico importado."] },
+  { id: "spreadsheet", title: "Cómo conectar un Spreadsheet", summary: "Preparación, pestaña, mapeo, sincronización y errores.", items: ["Publica la hoja o habilita un enlace exportable sin autenticación.", "Usa solo Fecha | Nombre | Ingreso | Gasto | Categoría. El código lo asigna MIDAS.", "Pega el enlace y selecciona desde MIDAS la pestaña que contiene los movimientos.", "Valida la vista previa y confirma el mapeo de columnas.", "MIDAS compara archivo, pestaña y contenido; reordenar filas no duplica. Los registros manuales se conservan. Editar una fila de la hoja la convierte en un movimiento nuevo.", "Las filas inválidas se informan sin detener las filas válidas.", "Cambiar la fuente conserva todo el histórico importado."] },
   { id: "debts", title: "Deudas", summary: "Saldo, interés, cuotas, pagos y proyección.", items: ["Registra entidad, saldo, interés y pago planificado.", "Cada pago se incorpora a Gastos Efectivos una sola vez.", "El saldo y la fecha proyectada se actualizan con cada pago.", "El simulador de pago adicional no modifica el plan real."] },
   { id: "dashboard", title: "Dashboard y MIDAS Score", summary: "Indicadores, alertas, forecast y recomendaciones.", items: ["El Dashboard resume ingreso, presupuesto, gasto, saldo y deuda.", "El forecast combina ritmo de gasto y deuda pendiente.", "MIDAS Score pondera presupuesto, ahorro, consumo discrecional y deuda.", "MIDAS Advisor separa observación, impacto y recomendación."] },
-] as const;
-const SHEET_FIELDS = [
-  ["source_id", "ID movimiento", true], ["date", "Fecha", true], ["description", "Descripción", true],
-  ["category", "Categoría", false], ["subcategory", "Subcategoría", false], ["amount", "Monto", true],
-  ["payment_method", "Medio de pago", false], ["account", "Cuenta", false], ["notes", "Nota", false],
 ] as const;
 
 function monthLabel(key: string) {
@@ -279,7 +276,7 @@ export default function Home() {
   const pie = metrics.categoryRows.filter(c => c.actual > 0).map(c => ({ name: c.name, value: c.actual, color: c.color }));
   const filtered = metrics.monthTx.filter(t => {
     const categoryName = data.categories.find(category => category.id === t.categoryId)?.name || "";
-    const match = (t.description + " " + categoryName).toLowerCase().includes(search.toLowerCase());
+    const match = [t.description, categoryName, t.code, t.sourceName].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase());
     return match && (typeFilter === "all" || t.type === typeFilter);
   });
   const visibleHelp = HELP_SECTIONS.filter(section => (section.title + " " + section.summary + " " + section.items.join(" ")).toLowerCase().includes(helpSearch.toLowerCase()));
@@ -397,13 +394,14 @@ export default function Home() {
 
   function exportCsv() {
     const rows: Array<Array<string | number>> = [
-      ["fecha", "nombre", "ingreso", "gasto", "categoria"],
+      ["fecha", "nombre", "ingreso", "gasto", "categoria", "codigo", "origen", "fuente"],
       ...filtered.map(t => [
         t.date,
         t.description,
         t.type === "income" ? t.amount : "",
         t.type === "income" ? "" : t.amount,
         finance.categories.find(c => c.id === t.categoryId)?.name || finance.debts.find(d => d.id === t.debtId)?.name || "",
+        t.code || "", t.sourceType === "spreadsheet" ? "Hoja" : "Manual", t.sourceName || "",
       ]),
     ];
     const csv = rows.map(row => row.map(value => '"' + String(value).replace(/"/g, '""') + '"').join(",")).join("\n");
@@ -489,7 +487,7 @@ export default function Home() {
       });
       if (redirectIfUnauthorized(response)) return;
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "No se pudo sincronizar.");
+      if (!response.ok) { if (result.remapRequired) setSheetStep("url"); throw new Error(result.error || "No se pudo sincronizar."); }
       setSyncResult(result);
       await load();
       setSheetStep("result");
@@ -608,7 +606,7 @@ export default function Home() {
           <PageHeading eyebrow="SINGLE SOURCE OF TRUTH" title="Gastos efectivos" subtitle="Fecha, nombre, ingreso, gasto y categoría en una sola vista." compact extra={<div className="heading-actions"><Tooltip><TooltipTrigger asChild><Button variant="outline" onClick={openSpreadsheet} disabled={sheetLoading}>{sheetLoading ? <RefreshCw className="spin" /> : <Database />}{data.spreadsheetSource ? "Sincronizar Spreadsheet" : "Obtener datos de Spreadsheet"}</Button></TooltipTrigger><TooltipContent>Importa únicamente movimientos nuevos desde una hoja publicada.</TooltipContent></Tooltip><Button className="gold-button" onClick={() => openQuick()}><Plus /> Registrar movimiento</Button></div>} />
           {data.spreadsheetSource && <section className="spreadsheet-connection"><div><span className={"connection-dot " + data.spreadsheetSource.lastSyncStatus} /><div><strong>Spreadsheet conectado</strong><p>{data.spreadsheetSource.sourceName} · Última sincronización: {data.spreadsheetSource.lastSyncAt ? formatDateTime(data.spreadsheetSource.lastSyncAt) : "pendiente"}</p></div></div><button onClick={openSpreadsheet}>Gestionar fuente <ChevronRight /></button></section>}
           <section className="ledger-toolbar panel">
-            <div className="search-box"><Search /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar nombre o categoría…" aria-label="Buscar movimientos" /></div>
+            <div className="search-box"><Search /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar nombre, código o categoría…" aria-label="Buscar movimientos" /></div>
             <Select value={typeFilter} onValueChange={setTypeFilter}><SelectTrigger className="filter-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Todos los tipos</SelectItem><SelectItem value="expense">Gastos</SelectItem><SelectItem value="income">Ingresos</SelectItem><SelectItem value="debt_payment">Pagos de deuda</SelectItem></SelectContent></Select>
             <input ref={importRef} type="file" accept=".csv,text/csv" hidden onChange={e => e.target.files?.[0] && importCsv(e.target.files[0])} />
             <Button variant="outline" onClick={() => importRef.current?.click()}><FileUp /> Importar CSV</Button>
@@ -619,7 +617,7 @@ export default function Home() {
               <TableBody>{filtered.map(t => {
                 const category = data.categories.find(c => c.id === t.categoryId);
                 const debt = data.debts.find(d => d.id === t.debtId);
-                return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</TableCell><TableCell className="strong-cell"><span className="transaction-name">{t.description}</span><span className="transaction-origin">{t.sourceType === "spreadsheet" ? "Spreadsheet" : "Manual"}</span></TableCell><TableCell className="align-right amount-cell positive">{t.type === "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell className="align-right amount-cell">{t.type !== "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell>{category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
+                return <TableRow key={t.id}><TableCell className="date-cell">{new Date(t.date + "T12:00:00").toLocaleDateString("es-PE", { day: "2-digit", month: "short", year: "numeric" })}</TableCell><TableCell className="strong-cell"><span className="transaction-name">{t.description}</span><span className="transaction-origin"><code className="transaction-code">{t.code || "Pendiente"}</code><span title={t.sourceName || "Registro manual"}>{t.sourceType === "spreadsheet" ? "Hoja · " + (t.sourceName?.split(" · ").slice(1).join(" · ") || "Spreadsheet") : "Manual"}</span></span></TableCell><TableCell className="align-right amount-cell positive">{t.type === "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell className="align-right amount-cell">{t.type !== "income" ? currency2.format(t.amount) : "—"}</TableCell><TableCell>{category ? <CategoryName category={category} /> : debt ? <div className="category-name"><span className="debt-dot" />{debt.name}</div> : "—"}</TableCell><TableCell><div className="row-actions">{t.type !== "debt_payment" && <Button variant="ghost" size="icon-sm" onClick={() => openQuick(t)} aria-label="Editar movimiento"><Pencil /></Button>}<Button variant="ghost" size="icon-sm" onClick={() => setDeleteTxn(t)} aria-label="Eliminar movimiento"><Trash2 /></Button></div></TableCell></TableRow>;
               })}</TableBody>
             </Table>
             {!filtered.length && <EmptyState icon={<ReceiptText />} title="No hay movimientos" text={search || typeFilter !== "all" ? "No encontramos resultados con esos filtros." : "Registra tu primer ingreso o gasto."} action={<Button className="gold-button" onClick={() => openQuick()}><Plus /> Movimiento</Button>} />}
@@ -663,7 +661,7 @@ export default function Home() {
             </aside>
             <div className="help-content">
               <Accordion type="multiple" defaultValue={["start", "spreadsheet"]} className="panel help-accordion">
-                {visibleHelp.map(section => <AccordionItem value={section.id} key={section.id} id={"help-" + section.id}><AccordionTrigger><div><span>{section.id === "spreadsheet" ? <Database /> : section.id === "debts" ? <CreditCard /> : section.id === "dashboard" ? <LayoutDashboard /> : section.id === "plan" ? <Target /> : section.id === "ledger" ? <ReceiptText /> : <Sparkles />}</span><div><strong>{section.title}</strong><p>{section.summary}</p></div></div></AccordionTrigger><AccordionContent><ol className="help-steps">{section.items.map((item, index) => <li key={item}><span>{index + 1}</span><p>{item}</p></li>)}</ol>{section.id === "spreadsheet" && <div className="spreadsheet-example"><span>ESTRUCTURA RECOMENDADA</span><code>ID_MOVIMIENTO | Fecha | Descripción | Categoría | Subcategoría | Monto | Medio_Pago | Cuenta | Nota</code><p>Spreadsheet alimenta Gastos Efectivos. MIDAS realiza el control y análisis financiero.</p></div>}</AccordionContent></AccordionItem>)}
+                {visibleHelp.map(section => <AccordionItem value={section.id} key={section.id} id={"help-" + section.id}><AccordionTrigger><div><span>{section.id === "spreadsheet" ? <Database /> : section.id === "debts" ? <CreditCard /> : section.id === "dashboard" ? <LayoutDashboard /> : section.id === "plan" ? <Target /> : section.id === "ledger" ? <ReceiptText /> : <Sparkles />}</span><div><strong>{section.title}</strong><p>{section.summary}</p></div></div></AccordionTrigger><AccordionContent><ol className="help-steps">{section.items.map((item, index) => <li key={item}><span>{index + 1}</span><p>{item}</p></li>)}</ol>{section.id === "spreadsheet" && <div className="spreadsheet-example"><span>ESTRUCTURA RECOMENDADA</span><code>Fecha | Nombre | Ingreso | Gasto | Categoría</code><p>Spreadsheet alimenta Gastos Efectivos. MIDAS realiza el control y análisis financiero.</p></div>}</AccordionContent></AccordionItem>)}
               </Accordion>
               {!visibleHelp.length && <div className="panel help-empty"><Search /><strong>Sin resultados</strong><p>Prueba con otra palabra o revisa el índice completo.</p></div>}
               <article className="panel about-midas" id="about-midas"><MidasCatIcon className="about-cat" size={72} /><div><p className="eyebrow">ACERCA DE MIDAS</p><h2>MIDAS Beta — v0.4.0</h2><p>Money Intelligence, Debt, Allocation & Spending</p><span>Hub de control de gastos · Datos aislados por usuario</span></div></article>
@@ -675,13 +673,14 @@ export default function Home() {
       <Button className="floating-add gold-button" onClick={() => openQuick()}><Plus /><span>Movimiento</span></Button>
 
       <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
-        <DialogContent className="midas-dialog spreadsheet-dialog">
-          <DialogHeader><p className="eyebrow">FUENTE EXTERNA · APPEND ONLY</p><DialogTitle>{sheetStep === "mapping" ? "Mapear columnas" : sheetStep === "result" ? "Sincronización completada" : data.spreadsheetSource && sheetStep === "status" ? "Spreadsheet conectado" : "Obtener datos de Spreadsheet"}</DialogTitle><DialogDescription>Sin Google API, OAuth ni credenciales. La hoja solo alimenta Gastos Efectivos.</DialogDescription></DialogHeader>
+        <DialogContent className="midas-dialog spreadsheet-dialog" data-theme={theme}>
+          <DialogHeader><p className="eyebrow">IMPORTAR MOVIMIENTOS</p><DialogTitle>{sheetStep === "mapping" ? "Mapear columnas" : sheetStep === "result" ? "Sincronización completada" : data.spreadsheetSource && sheetStep === "status" ? "Spreadsheet conectado" : "Obtener datos de Spreadsheet"}</DialogTitle><DialogDescription>Conecta una pestaña y añade movimientos sin reemplazar tus registros manuales.</DialogDescription></DialogHeader>
 
+          {error && <p className="mapping-validation" role="alert">{error}</p>}
           {sheetStep === "status" && data.spreadsheetSource && <div className="sheet-status">
             <div className="sheet-source-card"><div className="integration-icon"><Database /></div><div><span>Fuente actual</span><strong>{data.spreadsheetSource.sourceName}</strong><p>Última sincronización: {data.spreadsheetSource.lastSyncAt ? formatDateTime(data.spreadsheetSource.lastSyncAt) : "pendiente"}</p></div><span className={"status-pill " + (data.spreadsheetSource.lastSyncStatus === "success" ? "success" : data.spreadsheetSource.lastSyncStatus === "partial" ? "warning" : "neutral")}><span />{data.spreadsheetSource.lastSyncStatus}</span></div>
             <div className="sync-summary"><MiniResult label="Encontrados" value={data.spreadsheetSource.lastRowsDetected} /><MiniResult label="Nuevos" value={data.spreadsheetSource.lastRowsInserted} /><MiniResult label="Ignorados" value={data.spreadsheetSource.lastRowsIgnored} /><MiniResult label="Errores" value={data.spreadsheetSource.lastRowsFailed} /></div>
-            <div className="sheet-actions"><Button variant="outline" onClick={() => { setChangingSource(true); setSheetUrl(""); setSheetNames([]); setSheetName(""); setSheetPreview(null); setSheetMapping({}); setSheetStep("url"); }}><Link2 /> Cambiar fuente de datos</Button><Button className="gold-button" disabled={sheetLoading} onClick={synchronizeSpreadsheet}>{sheetLoading ? <RefreshCw className="spin" /> : <RefreshCw />} {sheetLoading ? "Sincronizando…" : "Sincronizar ahora"}</Button></div>
+            <div className="sheet-actions"><Button variant="outline" onClick={() => { setChangingSource(true); setSheetUrl(""); setSheetNames([]); setSheetName(""); setSheetPreview(null); setSheetMapping({}); setSheetStep("url"); }}><Link2 /> Cambiar archivo o pestaña</Button><Button variant="outline" onClick={() => setSheetStep("url")}>Revisar columnas</Button><Button className="gold-button" disabled={sheetLoading} onClick={synchronizeSpreadsheet}>{sheetLoading ? <RefreshCw className="spin" /> : <RefreshCw />} {sheetLoading ? "Sincronizando…" : "Sincronizar ahora"}</Button></div>
           </div>}
 
           {sheetStep === "url" && <div className="sheet-url-step">
@@ -691,7 +690,7 @@ export default function Home() {
             {sheetLoading && <div className="sheet-detection-status"><RefreshCw className="spin" /><span>Detectando pestañas automáticamente…</span></div>}
             {!sheetLoading && sheetNames.length > 0 && <div className="sheet-tab-picker">
               <div className="preview-chip"><Check /> {sheetNames.length} {sheetNames.length === 1 ? "pestaña detectada" : "pestañas detectadas"}</div>
-              <DialogField label="Pestaña que MIDAS debe leer" wide><Select value={sheetName} onValueChange={setSheetName}><SelectTrigger className="sheet-tab-select"><SelectValue placeholder="Selecciona una pestaña" /></SelectTrigger><SelectContent>{sheetNames.map(name => <SelectItem value={name} key={name}>{name}</SelectItem>)}</SelectContent></Select></DialogField>
+              <DialogField label="Pestaña que MIDAS debe leer" wide><select className="sheet-native-select" aria-label="Pestaña que MIDAS debe leer" value={sheetName} onChange={event => setSheetName(event.target.value)}><option value="">Selecciona una pestaña</option>{sheetNames.map(name => <option value={name} key={name}>{name}</option>)}</select></DialogField>
             </div>}
             <div className="privacy-note"><ShieldCheck /><span>MIDAS no solicita ni almacena usuario, contraseña, API Key, OAuth o tokens de Google.</span></div>
             <Button className="gold-button" disabled={!sheetName || sheetLoading} onClick={previewSpreadsheet}>{sheetLoading ? "Cargando vista previa…" : "Usar pestaña seleccionada"}</Button>
@@ -699,9 +698,8 @@ export default function Home() {
 
           {sheetStep === "mapping" && sheetPreview && <div className="mapping-step">
             <div className="preview-chip"><Check /> Pestaña “{sheetPreview.sheetName}” accesible · {sheetPreview.headers.length} columnas detectadas</div>
-            <div className="mapping-grid">{SHEET_FIELDS.map(([key, label, required]) => <div className="mapping-row" key={key}><div><strong>{label}</strong>{required && <span>Obligatorio</span>}</div><ChevronRight /><Select value={sheetMapping[key] || "__none"} onValueChange={value => setSheetMapping({ ...sheetMapping, [key]: value === "__none" ? undefined : value })}><SelectTrigger className="mapping-select"><SelectValue placeholder="Sin asignar" /></SelectTrigger><SelectContent><SelectItem value="__none">Sin asignar</SelectItem>{sheetPreview.headers.map(header => <SelectItem value={header} key={header}>{header}</SelectItem>)}</SelectContent></Select></div>)}</div>
-            <div className="sheet-preview-table"><span>VISTA PREVIA</span><div><Table><TableHeader><TableRow>{sheetPreview.headers.slice(0, 5).map(header => <TableHead key={header}>{header}</TableHead>)}</TableRow></TableHeader><TableBody>{sheetPreview.preview.slice(0, 3).map((row, index) => <TableRow key={index}>{sheetPreview.headers.slice(0, 5).map(header => <TableCell key={header}>{row[header] || "—"}</TableCell>)}</TableRow>)}</TableBody></Table></div></div>
-            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("url")}>Cambiar pestaña</Button><Button className="gold-button" disabled={sheetLoading || !sheetMapping.source_id || !sheetMapping.date || !sheetMapping.description || !sheetMapping.amount} onClick={saveSpreadsheetSource}>{sheetLoading ? "Guardando…" : "Guardar conexión"}</Button></div>
+            <SpreadsheetMapping headers={sheetPreview.headers} preview={sheetPreview.preview} mapping={sheetMapping} onChange={setSheetMapping} disabled={sheetLoading} />
+            <div className="sheet-actions"><Button variant="outline" onClick={() => setSheetStep("url")}>Cambiar pestaña</Button><Button className="gold-button" disabled={sheetLoading || !sheetMapping.date || !sheetMapping.description || !sheetMapping.category || (!sheetMapping.income && !sheetMapping.expense)} onClick={saveSpreadsheetSource}>{sheetLoading ? "Guardando…" : "Guardar conexión"}</Button></div>
           </div>}
 
           {sheetStep === "result" && syncResult && <div className="sync-result">

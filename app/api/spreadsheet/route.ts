@@ -1,12 +1,14 @@
 import { authErrorResponse, ensureContext, newLogId } from "../../../lib/auth";
 import {
-  APPWRITE_TABLES, Query, createRow, findRow, listRows, updateRow,
+  APPWRITE_DATABASE_ID, APPWRITE_TABLES, Query, createRow, findRow, listRows, listAllRows, updateRow,
 } from "../../../lib/appwrite/server";
 import { mapCategory, mapSource, mapSyncLog } from "../../../lib/midas-data";
 import {
-  ColumnMapping, fetchSpreadsheet, normalizeAmount, normalizeDate, rowObject, suggestMapping,
+  fetchSpreadsheet, rowObject, suggestMapping, sheetHeaders, validateMapping, parseMappedRow, parseSignedAmount,
   fetchSpreadsheetSheets, withSpreadsheetSheet,
 } from "../../../lib/spreadsheet";
+import { digest, importIdentity, movementFingerprint, nextOccurrence, normalizedText, sourceScope } from "../../../lib/ledger";
+import { withMovementCode } from "../../../lib/ledger-store";
 
 function id(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 35 - prefix.length)}`;
@@ -15,10 +17,6 @@ function id(prefix: string) {
 function sourceLabel(url: string) {
   const match = url.match(/\/spreadsheets\/d\/(?:e\/)?([^/]+)/);
   return `Google Spreadsheet ${match?.[1]?.slice(0, 8) ?? ""}`;
-}
-
-function requiredMapping(mapping: Partial<ColumnMapping>): mapping is ColumnMapping {
-  return Boolean(mapping.source_id && mapping.date && mapping.description && mapping.amount);
 }
 
 export async function GET() {
@@ -54,26 +52,33 @@ export async function POST(request: Request) {
       const sheetName = String(payload.sheetName ?? "").trim();
       const selectedUrl = withSpreadsheetSheet(rawUrl, sheetName);
       const result = await fetchSpreadsheet(selectedUrl);
-      const headers = result.rows[0].map(header => header.trim());
+      const allHeaders = sheetHeaders(result.rows[0]);
+      const headers = allHeaders.filter(Boolean);
+      const suggestedMapping = suggestMapping(headers);
+      const amountColumn = suggestedMapping.income || suggestedMapping.expense;
+      if (amountColumn && !(suggestedMapping.income && suggestedMapping.expense)) {
+        suggestedMapping.signed = result.rows.slice(1).some(row => {
+          try { return parseSignedAmount(rowObject(allHeaders, row)[amountColumn] || "") < 0; } catch { return false; }
+        });
+      }
       return Response.json({
         sourceName: `${sourceLabel(rawUrl)} · ${sheetName}`, sheetName, headers,
-        preview: result.rows.slice(1, 6).map(row => rowObject(headers, row)),
-        suggestedMapping: suggestMapping(headers),
+        preview: result.rows.slice(1, 6).map(row => rowObject(allHeaders, row)),
+        suggestedMapping,
       });
     }
 
     if (action === "save_source") {
       const rawUrl = String(payload.url ?? "");
       const sheetName = String(payload.sheetName ?? "").trim();
-      const mapping = payload.mapping as Partial<ColumnMapping>;
-      if (!requiredMapping(mapping)) return Response.json({ error: "Mapea ID, fecha, descripción y monto." }, { status: 400 });
       const selectedUrl = withSpreadsheetSheet(rawUrl, sheetName);
       const result = await fetchSpreadsheet(selectedUrl);
-      const headers = result.rows[0].map(header => header.trim());
-      const missing = Object.values(mapping).filter(Boolean).filter(column => !headers.includes(String(column)));
-      if (missing.length) return Response.json({ error: "La estructura cambió. Revisa el mapeo de columnas." }, { status: 400 });
+      const headers = sheetHeaders(result.rows[0]);
+      let mapping;
+      try { mapping = validateMapping(payload.mapping, headers); }
+      catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Mapeo inválido." }, { status: 400 }); }
       const existing = await findRow(tables, APPWRITE_TABLES.sources, [Query.equal("user_id", user.id)]);
-      const name = String(payload.sourceName ?? sourceLabel(rawUrl)).trim() || sourceLabel(rawUrl);
+      const name = `${sourceLabel(rawUrl)} · ${sheetName}`.slice(0, 128);
       const now = new Date().toISOString();
       const sourceData = {
         user_id: user.id, source_name: name, source_url: selectedUrl, column_mapping: JSON.stringify(mapping),
@@ -98,29 +103,31 @@ export async function POST(request: Request) {
       const source = mapSource(sourceRow);
       const startedAt = new Date().toISOString();
       const result = await fetchSpreadsheet(source.sourceUrl);
-      const headers = result.rows[0].map(header => header.trim());
-      const mapping = JSON.parse(source.columnMapping) as ColumnMapping;
-      if (!requiredMapping(mapping) || [mapping.source_id, mapping.date, mapping.description, mapping.amount].some(column => !headers.includes(column))) {
-        return Response.json({ error: "La estructura de la hoja cambió. Configura nuevamente el mapeo." }, { status: 409 });
-      }
+      const headers = sheetHeaders(result.rows[0]);
+      let mapping;
+      try { mapping = validateMapping(JSON.parse(source.columnMapping), headers); }
+      catch { return Response.json({ error: "Actualiza el mapeo: Fecha, Nombre, Ingreso, Gasto y Categoría. MIDAS ya no requiere IDs de la hoja.", remapRequired: true }, { status: 409 }); }
+      const scope = sourceScope(source.sourceUrl);
 
       const categoryRows = (await listRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", user.id)])).map(mapCategory);
-      let fallback = categoryRows.find(category => category.name.toLowerCase() === "sin categorizar");
-      if (!fallback) {
-        const fallbackId = id("cat");
-        const created = await createRow(tables, APPWRITE_TABLES.categories, fallbackId, {
-          user_id: user.id, name: "Sin categorizar", group_name: "Otros", budget: 0,
-          color: "#8490A3", kind: "variable", archived: false,
-        });
-        fallback = mapCategory(created);
-        categoryRows.push(fallback);
-      }
-      const categoryMap = new Map(categoryRows.map(category => [category.name.trim().toLowerCase(), category.id]));
-      const existingRows = await listRows(tables, APPWRITE_TABLES.transactions, [
+      const categoryMap = new Map(categoryRows.map(category => [normalizedText(category.name), category.id]));
+      const existingRows = await listAllRows(tables, APPWRITE_TABLES.transactions, [
         Query.equal("user_id", user.id), Query.equal("source_type", "spreadsheet"),
       ]);
       const existingIds = new Set(existingRows.map(row => String(row.source_id ?? "")).filter(Boolean));
-      const seenIds = new Set<string>();
+      // Legacy records had no workbook/tab key. Only match an explicitly named
+      // identical source, never manual entries or rows from other tabs.
+      const legacy = new Map<string, typeof existingRows>();
+      for (const row of existingRows) {
+        if (String(row.source_id ?? "").startsWith("v2:") || row.source_name !== source.sourceName || !source.sourceName.includes(" · ")) continue;
+        const category = categoryRows.find(item => item.id === row.category_id)?.name;
+        if (!category) continue;
+        const fingerprint = movementFingerprint({ date: String(row.date), description: String(row.description), amount: Number(row.amount), type: String(row.type), category });
+        const group = legacy.get(fingerprint) ?? [];
+        group.push(row);
+        legacy.set(fingerprint, group);
+      }
+      const occurrences = new Map<string, number>();
       let detected = 0;
       let inserted = 0;
       let ignored = 0;
@@ -128,29 +135,43 @@ export async function POST(request: Request) {
 
       for (let index = 1; index < result.rows.length; index++) {
         const object = rowObject(headers, result.rows[index]);
-        if (!Object.values(object).some(value => value.trim())) continue;
-        if (object[mapping.source_id]?.trim() === mapping.source_id) continue;
+        const mappedColumns = [mapping.date, mapping.description, mapping.category, mapping.income, mapping.expense].filter(Boolean) as string[];
+        if (!mappedColumns.some(column => object[column]?.trim())) continue;
+        if (object[mapping.date] === mapping.date && object[mapping.description] === mapping.description) continue;
         detected++;
         try {
-          const sourceId = object[mapping.source_id]?.trim();
-          if (!sourceId) throw new Error("ID_MOVIMIENTO vacío");
-          if (existingIds.has(sourceId) || seenIds.has(sourceId)) { ignored++; continue; }
-          const date = normalizeDate(object[mapping.date] ?? "");
-          const amount = normalizeAmount(object[mapping.amount] ?? "");
-          const description = object[mapping.description]?.trim();
-          if (!description) throw new Error("descripción vacía");
-          const categoryName = mapping.category ? object[mapping.category]?.trim().toLowerCase() : "";
-          await createRow(tables, APPWRITE_TABLES.transactions, id("txn"), {
-            user_id: user.id, date, description, amount,
-            category_id: categoryMap.get(categoryName) ?? fallback.id,
-            subcategory: mapping.subcategory ? object[mapping.subcategory]?.trim() || undefined : undefined,
-            type: "expense", account: mapping.account ? object[mapping.account]?.trim() || "Spreadsheet" : "Spreadsheet",
-            payment_method: mapping.payment_method ? object[mapping.payment_method]?.trim() || undefined : undefined,
-            notes: mapping.notes ? object[mapping.notes]?.trim() || undefined : undefined,
-            source_type: "spreadsheet", source_id: sourceId, source_name: source.sourceName, source_imported_at: new Date().toISOString(),
-          });
-          inserted++;
-          seenIds.add(sourceId);
+          const movement = parseMappedRow(object, mapping);
+          const fingerprint = movementFingerprint(movement);
+          const identity = importIdentity(user.id, scope, fingerprint, nextOccurrence(occurrences, fingerprint));
+          if (existingIds.has(identity.sourceId)) { ignored++; continue; }
+          const prior = legacy.get(fingerprint)?.shift();
+          if (prior) {
+            await updateRow(tables, APPWRITE_TABLES.transactions, prior.$id, { source_id: identity.sourceId });
+            existingIds.add(identity.sourceId);
+            ignored++;
+            continue;
+          }
+          const categoryName = normalizedText(movement.category);
+          if (!categoryMap.has(categoryName)) {
+            const categoryId = `cat_${digest(user.id + ":" + categoryName)}`;
+            try { await createRow(tables, APPWRITE_TABLES.categories, categoryId, { user_id: user.id, name: movement.category, group_name: "Importadas", budget: 0, color: "#8490A3", kind: "variable", archived: false }); }
+            catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === 409)) throw error; }
+            categoryMap.set(categoryName, categoryId);
+          }
+          try {
+            await withMovementCode(tables, user.id, movement.date, movement.type, (code, transactionId) => createRow(tables, APPWRITE_TABLES.transactions, identity.rowId, {
+              user_id: user.id, date: movement.date, description: movement.description, amount: movement.amount,
+              category_id: categoryMap.get(categoryName), type: movement.type, account: "Spreadsheet", midas_code: code,
+              source_type: "spreadsheet", source_id: identity.sourceId, source_name: source.sourceName, source_imported_at: new Date().toISOString(),
+            }, transactionId));
+            inserted++;
+          } catch (error) {
+            if (!(error && typeof error === "object" && "code" in error && error.code === 409)) throw error;
+            const concurrent = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.transactions, rowId: identity.rowId });
+            if (concurrent.user_id !== user.id || concurrent.source_id !== identity.sourceId) throw error;
+            ignored++;
+          }
+          existingIds.add(identity.sourceId);
         } catch (error) {
           errors.push({ row: index + 1, reason: error instanceof Error ? error.message : "fila inválida" });
         }
@@ -158,7 +179,8 @@ export async function POST(request: Request) {
 
       const completedAt = new Date().toISOString();
       const status = errors.length ? (inserted ? "partial" : "failed") : "success";
-      await updateRow(tables, APPWRITE_TABLES.sources, source.id, {
+      const currentSource = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.sources, rowId: source.id });
+      if (currentSource.source_url === source.sourceUrl && currentSource.column_mapping === source.columnMapping) await updateRow(tables, APPWRITE_TABLES.sources, source.id, {
         last_sync_at: completedAt, last_sync_status: status, last_rows_detected: detected,
         last_rows_inserted: inserted, last_rows_ignored: ignored, last_rows_failed: errors.length, updated_at: completedAt,
       });
