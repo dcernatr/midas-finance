@@ -383,9 +383,6 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible, [role=
 .budget-form input[type="color"] { width: 72px; padding: 4px; }
 .budget-group { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.5; }
 .budget-group input { margin-top: 4px; flex: none; width: 18px; height: 18px; accent-color: var(--gold); }
-.initial-plan { display: grid; gap: 8px; }
-.initial-plan > div { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
-.initial-plan strong { white-space: nowrap; }
 @media (max-width: 620px) { .budget-workspace { width: calc(100% - 24px); } .period-switch { justify-content: space-between; gap: 6px; } .period-switch input { width: 160px; } .period-switch button { padding-inline: 8px; } .period-actions > button { flex: 1 1 150px; } }
 .search-box { height: 42px; display: flex; align-items: center; gap: 9px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(127,137,147,.05); }
 .search-box svg { width: 15px; color: var(--muted-text); }
@@ -394,10 +391,6 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible, [role=
 .ledger-panel { overflow: hidden; padding: 0; min-width: 0; }
 .data-freshness { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; font-size: 13px; color: var(--muted-text); }
 .data-freshness.stale { padding: 12px; color: var(--warning); background: var(--gold-soft); border-radius: 10px; }
-.initial-budget-status { flex: 1 0 100%; display: flex; justify-content: space-between; align-items: center; gap: 16px; border-top: 1px solid var(--line); padding-top: 14px; }
-.initial-budget-status.pending strong { color: var(--gold); }
-.initial-budget-status.applied strong { color: var(--success); }
-.initial-plan small { display: block; color: var(--muted-text); font-size: 12px; margin-top: 3px; }
 .ledger-view-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ledger-totals { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; padding: 16px; background: var(--gold-soft); border-bottom: 1px solid var(--line); }
 .ledger-totals span { display: block; font-size: 12px; color: var(--muted-text); margin-bottom: 6px; }
@@ -436,7 +429,6 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible, [role=
   .ledger-toolbar .search-box { grid-column: 1 / -1; }
 }
 @media (max-width: 680px) {
-  .initial-budget-status { align-items: stretch; flex-direction: column; }
   .ledger-totals { gap: 8px; padding: 12px; }
   .ledger-totals strong { font-size: 15px; }
   .expense-table { min-width: 0; display: block; }

@@ -46,13 +46,13 @@ test("rendered preview includes expense category choices but no income classific
   assert.doesNotMatch(html, /Categoría de Ingreso|type="checkbox"/);
 });
 
-test("rendered period settings expose salary boundaries, uncertainty and confirmed initial plan action", () => {
+test("rendered period settings expose salary boundaries without a personal budget preset", () => {
   const html = renderToStaticMarkup(React.createElement(BudgetPeriodSettings, { profile, period: periodWindow("2026-09", profile.starts), transactions: [], disabled: false, theme: "light", onSave: async () => true }));
   assert.match(html, /2026-08-28/);
   assert.match(html, /Inicio confirmado/);
   assert.match(html, /Fin estimado/);
   assert.match(html, /no incluye feriados/);
-  assert.match(html, /13,530/);
+  assert.doesNotMatch(html, /13,530|Revisar y cargar programados|Presupuesto inicial/);
 });
 
 test("ledger prioritizes five fields and collapses provenance; pagination totals include all filtered rows", () => {
@@ -67,9 +67,17 @@ test("ledger prioritizes five fields and collapses provenance; pagination totals
   assert.match(html, /data-label="Categoría"/);
 });
 
-test("initial budget status never presents the template as saved before persistence", () => {
-  const render = p => renderToStaticMarkup(React.createElement(BudgetPeriodSettings, { categories, profile: p, period: periodWindow("2026-09", p.starts), transactions: [], disabled: false, theme: "dark", onSave: async () => true }));
-  assert.match(render(profile), /todavía no está cargado/);
-  const saved = render({ ...profile, initialApplied: true });
-  assert.match(saved, /guardado en tu cuenta/); assert.doesNotMatch(saved, /Revisar y cargar/);
+test("personal preset controls stay absent for new and previously initialized accounts in either theme", () => {
+  for (const initialApplied of [false, true]) for (const theme of ["dark", "light"]) {
+    const p = { ...profile, initialApplied };
+    const snapshot = structuredClone(p);
+    const html = renderToStaticMarkup(React.createElement(BudgetPeriodSettings, { profile: p, period: periodWindow("2026-09", p.starts), transactions: [], disabled: false, theme, onSave: async () => { throw new Error("Rendering must not save a budget"); } }));
+    assert.doesNotMatch(html, /Presupuesto inicial|Revisar y cargar|Guardar programados|13,530|todavía no está cargado|guardado en tu cuenta/);
+    assert.match(html, /Configurar sueldo/);
+    assert.deepEqual(p, snapshot);
+  }
+  const page = readFileSync(root + "app/page.tsx", "utf8");
+  assert.doesNotMatch(page, /13,530|Revisa el plan inicial|budget_initial/);
+  assert.match(page, /Agrega manualmente/);
+  assert.match(page, /onClick=\{\(\) => openCategory\(\)\}/);
 });
