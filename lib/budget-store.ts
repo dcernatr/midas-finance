@@ -1,14 +1,14 @@
-import type { TablesDB } from "node-appwrite";
-import { APPWRITE_DATABASE_ID, APPWRITE_TABLES, createRow, updateRow, listAllRows, Query, type AppwriteRow } from "./appwrite/server";
+import type { MidasTables } from "./postgres/server";
+import { DATABASE_ID, TABLES, createRow, updateRow, listAllRows, Query, type MidasRow } from "./postgres/server";
 import { digest, sourceScope } from "./ledger";
 import { mapCategory } from "./midas-data";
 import { emptyProfile, type BudgetProfile, type BudgetCategory, categoryKey, planFor, validPeriod, confirmPeriod, INITIAL_PLAN, shiftPeriod, periodForDate, aliasKey, originalScope, isPlanned } from "./budgeting";
 
 const errorCode = (error: unknown) => error && typeof error === "object" && "code" in error ? Number(error.code) : 0;
 const profileId = (userId: string) => `bp_${digest(userId)}`;
-export async function loadBudgetProfile(tables: TablesDB, userId: string, categories: BudgetCategory[], transactionId?: string): Promise<BudgetProfile> {
+export async function loadBudgetProfile(tables: MidasTables, userId: string, categories: BudgetCategory[], transactionId?: string): Promise<BudgetProfile> {
   try {
-    const row = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.budgetProfiles, rowId: profileId(userId), transactionId });
+    const row = await tables.getRow({ databaseId: DATABASE_ID, tableId: TABLES.budgetProfiles, rowId: profileId(userId), transactionId });
     if (row.user_id !== userId) throw new Error("El presupuesto no pertenece a esta cuenta.");
     const profile = JSON.parse(String(row.data)) as BudgetProfile;
     if (profile.version !== 1) throw new Error("Formato de presupuesto no compatible.");
@@ -22,10 +22,10 @@ function amount(value: unknown) {
   if (value === "" || value == null || !Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 100000000) throw new Error("Indica un presupuesto válido mayor o igual a cero.");
   return Math.round(Number(value) * 100) / 100;
 }
-export async function budgetAction(tables: TablesDB, userId: string, payload: Record<string, unknown>) {
+export async function budgetAction(tables: MidasTables, userId: string, payload: Record<string, unknown>) {
   const action = String(payload.action);
   const key = validPeriod(String(payload.targetPeriod || payload.monthKey));
-  const rawCategories = await listAllRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", userId)]);
+  const rawCategories = await listAllRows(tables, TABLES.categories, [Query.equal("user_id", userId)]);
   const categories = rawCategories.map(mapCategory);
   // A single private profile serializes period/plan/alias changes. Categories and
   // individual assignments commit in the same transaction; conflicts retry.
@@ -35,7 +35,7 @@ export async function budgetAction(tables: TablesDB, userId: string, payload: Re
       const profile = await loadBudgetProfile(tables, userId, categories, tx.$id);
       const plan = () => profile.budgets[key] ??= { ...planFor(profile, key) };
       const ownedCategory = async (id: string) => {
-        const row = await tables.getRow<AppwriteRow>({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.categories, rowId: id, transactionId: tx.$id });
+        const row = await tables.getRow<MidasRow>({ databaseId: DATABASE_ID, tableId: TABLES.categories, rowId: id, transactionId: tx.$id });
         if (row.user_id !== userId || row.archived) throw new Error("Selecciona una categoría activa de tu cuenta.");
         return row;
       };
@@ -46,11 +46,11 @@ export async function budgetAction(tables: TablesDB, userId: string, payload: Re
         if (equivalent) {
           if (equivalent.archived) throw new Error("Ya existe una categoría archivada con ese nombre. Elige una categoría activa.");
           await ownedCategory(equivalent.id);
-          if (!preserveColor) await updateRow(tables, APPWRITE_TABLES.categories, equivalent.id, { color }, tx.$id);
+          if (!preserveColor) await updateRow(tables, TABLES.categories, equivalent.id, { color }, tx.$id);
           return equivalent.id;
         }
         const id = `cat_${digest(userId + ":plan:" + categoryKey(name))}`;
-        try { await createRow(tables, APPWRITE_TABLES.categories, id, { user_id: userId, name, color, group_name: "Programadas", kind: "variable", budget: 0, archived: false }, tx.$id); }
+        try { await createRow(tables, TABLES.categories, id, { user_id: userId, name, color, group_name: "Programadas", kind: "variable", budget: 0, archived: false }, tx.$id); }
         catch (error) { if (errorCode(error) !== 409) throw error; await ownedCategory(id); }
         return id;
       };
@@ -88,22 +88,22 @@ export async function budgetAction(tables: TablesDB, userId: string, payload: Re
           if (categories.some(c => c.id !== id && categoryKey(c.name) === categoryKey(name))) throw new Error("Ya existe una categoría con ese nombre.");
           const kind = String(payload.kind || row.kind);
           if (!["fixed", "variable", "discretionary"].includes(kind)) throw new Error("Tipo de categoría inválido.");
-          await updateRow(tables, APPWRITE_TABLES.categories, id, { name, color, group_name: String(payload.groupName || row.group_name).slice(0, 128), kind }, tx.$id);
+          await updateRow(tables, TABLES.categories, id, { name, color, group_name: String(payload.groupName || row.group_name).slice(0, 128), kind }, tx.$id);
         } else {
           id = await ensureCategory(String(payload.name || ""), String(payload.color || "#CBA65B"));
           const kind = String(payload.kind || "variable");
           if (!["fixed", "variable", "discretionary"].includes(kind)) throw new Error("Tipo de categoría inválido.");
-          await updateRow(tables, APPWRITE_TABLES.categories, id, { kind, group_name: String(payload.groupName || "Programadas").slice(0, 128) }, tx.$id);
+          await updateRow(tables, TABLES.categories, id, { kind, group_name: String(payload.groupName || "Programadas").slice(0, 128) }, tx.$id);
         }
         plan()[id] = amount(payload.budget);
       } else if (action === "budget_remove") {
         await ownedCategory(String(payload.id));
         delete plan()[String(payload.id)];
       } else if (action === "budget_link") {
-        let movement: AppwriteRow | undefined;
+        let movement: MidasRow | undefined;
         let original: string, scope: string, period: string;
         if (payload.transactionId) {
-          movement = await tables.getRow<AppwriteRow>({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.transactions, rowId: String(payload.transactionId), transactionId: tx.$id });
+          movement = await tables.getRow<MidasRow>({ databaseId: DATABASE_ID, tableId: TABLES.transactions, rowId: String(payload.transactionId), transactionId: tx.$id });
           if (movement.user_id !== userId || movement.type !== "expense") throw new Error("El gasto no existe o no pertenece a tu cuenta.");
           original = String(movement.source_category || categories.find(c => c.id === movement!.category_id)?.name || "");
           scope = originalScope(String(movement.source_id || ""));
@@ -131,18 +131,18 @@ export async function budgetAction(tables: TablesDB, userId: string, payload: Re
           if (!scope) throw new Error("Este registro no identifica archivo y pestaña. Vincúlalo individualmente.");
           profile.aliases[aliasKey(scope, original)] = target;
         }
-        if (movement) await updateRow(tables, APPWRITE_TABLES.transactions, movement.$id, {
+        if (movement) await updateRow(tables, TABLES.transactions, movement.$id, {
           source_category: original, category_id: target, category_override: true,
         }, tx.$id);
       } else throw new Error("Acción de presupuesto no reconocida.");
       const serialized = JSON.stringify(profile);
       if (new TextEncoder().encode(serialized).length > 60000) throw new Error("El historial de configuración alcanzó su límite. No se ha modificado nada.");
       try {
-        await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.budgetProfiles, rowId: profileId(userId), transactionId: tx.$id });
-        await updateRow(tables, APPWRITE_TABLES.budgetProfiles, profileId(userId), { data: serialized }, tx.$id);
+        await tables.getRow({ databaseId: DATABASE_ID, tableId: TABLES.budgetProfiles, rowId: profileId(userId), transactionId: tx.$id });
+        await updateRow(tables, TABLES.budgetProfiles, profileId(userId), { data: serialized }, tx.$id);
       } catch (error) {
         if (errorCode(error) !== 404) throw error;
-        await createRow(tables, APPWRITE_TABLES.budgetProfiles, profileId(userId), { user_id: userId, data: serialized }, tx.$id);
+        await createRow(tables, TABLES.budgetProfiles, profileId(userId), { user_id: userId, data: serialized }, tx.$id);
       }
       await tables.updateTransaction({ transactionId: tx.$id, commit: true });
       return;

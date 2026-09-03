@@ -15,16 +15,30 @@ export default function LoginPage() {
     event.preventDefault();
     setLoading(true);
     setMessage("");
+    try {
     const response = await fetch("/api/auth/session", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email, password, mode }),
     });
-    const result = await response.json() as { error?: string };
-    setLoading(false);
+    const result = await response.json() as { error?: string; needsVerification?: boolean; message?: string };
     if (!response.ok) return setMessage(result.error ?? "No se pudo completar el acceso.");
+    if (result.needsVerification) { setMode("signin"); return setMessage(result.message || "Revisa tu correo para verificar la cuenta."); }
     const returnTo = new URLSearchParams(window.location.search).get("returnTo");
-    window.location.href = returnTo?.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/";
+    const destination = new URL(returnTo || "/", window.location.origin);
+    window.location.href = destination.origin === window.location.origin ? destination.href : "/";
+    } catch { setMessage("No se pudo conectar con MIDAS. Vuelve a intentar."); }
+    finally { setLoading(false); }
+  }
+
+  async function resendVerification() {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/auth/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }) });
+      const result = await response.json();
+      setMessage(result.message || result.error || "Vuelve a intentar.");
+    } catch { setMessage("No se pudo enviar la solicitud."); }
+    finally { setLoading(false); }
   }
 
   return (
@@ -44,7 +58,8 @@ export default function LoginPage() {
           {message && <p className="login-message">{message}</p>}
           <button className="gold-button login-submit" disabled={loading}>{loading ? "Procesando…" : mode === "signin" ? "Ingresar" : "Crear cuenta"}</button>
         </form>
-        <div className="login-security"><ShieldCheck /><span>Autenticación segura con Appwrite. MIDAS nunca almacena tu contraseña.</span></div>
+        <button className="text-button" type="button" disabled={loading || !email} onClick={resendVerification}>Reenviar verificación</button>
+        <div className="login-security"><ShieldCheck /><span>Autenticación con Neon Auth. MIDAS no guarda contraseñas en sus tablas financieras.</span></div>
       </section>
     </main>
   );

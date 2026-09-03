@@ -1,6 +1,6 @@
 # MIDAS Finance
 
-MIDAS (Money Intelligence, Debt, Allocation & Spending) es un hub de control de gastos construido con Next.js y Appwrite Cloud.
+MIDAS (Money Intelligence, Debt, Allocation & Spending) es un hub de control de gastos construido con Next.js, PostgreSQL en Neon y Neon Auth.
 
 ## Funciones principales
 
@@ -14,61 +14,41 @@ MIDAS (Money Intelligence, Debt, Allocation & Spending) es un hub de control de 
 - Aislamiento de datos por usuario desde el servidor y tablas privadas.
 - Infraestructura propia, sin compartir base de datos con TERRAN ni PomoBoxing.
 
-## Stack
+## Stack y publicación
 
-- Next.js 16 + React 19 + TypeScript
-- Appwrite Auth + TablesDB
-- Tailwind CSS + componentes shadcn
-- Appwrite Sites
+- Next.js 16 + React 19 + TypeScript.
+- PostgreSQL privado en Neon + Neon Auth.
+- GitHub `dcernatr/midas-finance` → proyecto Vercel independiente.
+- Región Vercel `iad1`, próxima al proyecto Neon en Virginia.
+- No se reutilizan bases, claves ni proyectos de TERRAN o Pomoboxing.
 
-## Desarrollo local
+## Estado de la transición
 
-1. Crea un proyecto exclusivo para MIDAS en Appwrite Cloud y elige la region **New York (`nyc`)** para reducir la latencia desde Peru frente a Europa.
-2. Copia `.env.example` a `.env.local` y completa:
+Esta versión prepara el cambio desde Appwrite. No importa historial, categorías, presupuestos ni contraseñas. Appwrite permanece intacto. Las categorías y presupuestos se ingresan manualmente o se obtienen de una nueva importación de Sheets.
 
-   - `NEXT_PUBLIC_APPWRITE_ENDPOINT`
-   - `NEXT_PUBLIC_APPWRITE_PROJECT_ID`
-   - `APPWRITE_API_KEY`
-   - `APPWRITE_DATABASE_ID=midas`
+No ejecutar los scripts históricos `appwrite:*` para esta instalación. Se conservan solamente como referencia de la versión anterior y no se invocan durante el build.
 
-3. Crea una API key de servidor con estos scopes:
+## Configuración inicial, una sola vez
 
-   - `sessions.write`
-   - `databases.read`, `databases.write`
-   - `tables.read`, `tables.write`
-   - `columns.read`, `columns.write`
-   - `indexes.read`, `indexes.write`
-   - `rows.read`, `rows.write`
+1. Vincular el repositorio MIDAS al equipo DCT en Vercel, seleccionando Next.js y la rama de producción `main`. Las publicaciones posteriores las realiza la integración GitHub → Vercel; no hace falta un token de Vercel dentro de GitHub Actions.
+2. Configurar exclusivamente en MIDAS:
+   - `DATABASE_URL`: conexión **pooled** de la base `midas` del proyecto Neon `morning-rice-11813850`.
+   - `DATABASE_URL_UNPOOLED`: conexión directa, solo para migraciones.
+   - `NEON_AUTH_BASE_URL`: URL de Neon Auth indicada en `.env.example`.
+   - `NEON_AUTH_COOKIE_SECRET`: secreto aleatorio de al menos 32 caracteres, estable entre despliegues del mismo entorno.
+   - `MIDAS_ADMIN_EMAIL`: correo del propietario. Configurarlo antes de crear la cuenta. Solo ese correo verificado recibe ADMIN; los demás reciben USER.
+3. Registrar la URL exacta de Vercel en los dominios autorizados de Neon Auth y verificar el envío de correos.
+4. Separar producción y pruebas mediante ramas de Neon. Nunca conectar una vista previa pública a datos reales.
+5. Después de verificar la vinculación y las variables, validar la migración en una rama de prueba. `npm run db:generate` genera SQL desde el esquema Drizzle, sin conectarse a ninguna base. `npm run db:migrate` aplica los archivos a la conexión directa configurada; **no ejecutarlo sobre otra base**.
+6. Aplicar en producción únicamente la migración validada y publicar desde GitHub. Registrar y verificar el correo, ingresar y volver a conectar Google Sheets. Los gastos programados se crean manualmente.
 
-4. Instala, prepara Appwrite y ejecuta:
+La compilación no realiza migraciones ni carga datos. `npm test` compila y ejecuta las pruebas, incluidas pruebas SQL con PostgreSQL embebido; no usa datos externos. `npm run dev` requiere la configuración de Neon preparada.
 
-   ```bash
-   npm install
-   npm run appwrite:setup
-   npm run dev
-   ```
+## Seguridad y persistencia
 
-5. Abre `http://localhost:3000`.
+La aplicación usa el esquema privado `midas_private`, con RLS habilitado y sin políticas de acceso público. El servidor usa una conexión privilegiada; por ello cada operación SQL impone además el propietario autenticado. Solo ADMIN puede consultar el conjunto administrativo y modificar ajustes globales. La contraseña es gestionada por Neon Auth, nunca por las tablas financieras. No añadir variables `NEXT_PUBLIC_` para secretos.
 
-## Base de datos
-
-`scripts/setup-appwrite.mjs` crea una base independiente y diez tablas privadas `midas_*`, incluida la secuencia de códigos. El navegador no recibe la API key ni accede directamente a las tablas. Las rutas Next.js validan la sesión y fuerzan el `user_id` en cada operación. El primer usuario registrado recibe el rol ADMIN.
-
-### Actualización de una instalación existente (antes de desplegar)
-
-El sitio Appwrite ya vinculado a MIDAS ejecuta esta migración automáticamente mediante `prebuild`, utilizando la credencial de servidor que ya tiene configurada. Se verifica el sitio, proyecto, región y base de datos antes de acceder a los datos. Si la configuración o la migración falla, se detiene la compilación. Las compilaciones locales/CI sin `APPWRITE_SITE_ID` no modifican ninguna base. No es necesario copiar ni revelar credenciales.
-
-Referencia de las variables inyectadas por el proveedor: https://appwrite.io/docs/products/sites/environment-variables
-
-Con las variables de servidor ya configuradas para **el proyecto MIDAS**, ejecuta:
-
-```bash
-npm run appwrite:migrate-ledger
-```
-
-La migración es aditiva e idempotente: agrega `midas_transactions.midas_code` y `midas_transaction_sequences`, sin borrar movimientos ni modificar otros proyectos. Requiere los permisos de tablas, columnas e índices indicados arriba. **No desplegar esta versión antes de que termine correctamente.** Al cargar los datos después del despliegue, los movimientos anteriores sin código reciben uno; los que ya lo tienen lo conservan.
-
-La numeración es independiente por usuario, año-mes y tipo (G/I), compartida entre registros manuales e importados. El incremento y la escritura se confirman en una transacción de Appwrite. Los números eliminados no se reutilizan. Cambiar el mes o tipo de un movimiento asigna un código del nuevo período/tipo. Más de 999 movimientos continúa en 1000, sin truncarse.
+Los códigos `AA-MM-G/I-000` comparten un contador por usuario, mes calendario y tipo. Incremento y movimiento se confirman juntos en una transacción PostgreSQL. Si falla el guardado, se revierte el contador. Los códigos eliminados no se reutilizan. La deduplicación conserva archivo + pestaña + contenido y no reemplaza movimientos manuales.
 
 ## Google Sheets
 
@@ -102,7 +82,7 @@ Gastos Efectivos muestra **todo el histórico** por defecto, incluidas fechas an
 - Se puede vincular un movimiento o guardar una equivalencia para los pendientes del mismo archivo/pestaña/categoría y futuras importaciones. Se ignoran mayúsculas, tildes y espacios extra al comparar nombres. Las equivalencias solo se resuelven cuando el destino está programado en el periodo correspondiente; no crean presupuesto en otros periodos.
 - La categoría original se conserva separada de la asignada. La identidad de deduplicación no se modifica al vincular ni al renombrar una categoría en MIDAS. Las asignaciones individuales prevalecen sobre equivalencias de grupo. Las importaciones anteriores sin categoría original conservada usan su categoría conocida como referencia; los registros sin ámbito inequívoco de pestaña solo admiten vinculación individual.
 
-La migración aditiva `scripts/budget-schema.mjs` crea `midas_budget_profiles` sin permisos públicos y dos columnas opcionales de trazabilidad en movimientos. Se ejecuta junto con la migración de códigos en el destino MIDAS validado; **no aplica presupuestos personales durante la compilación**. Las pruebas locales no acceden a bases reales.
+El esquema Neon guarda perfiles y trazabilidad en registros privados. El script `scripts/budget-schema.mjs` pertenece a la versión histórica de Appwrite y no se ejecuta en Neon. **No se aplican presupuestos personales durante la compilación**. Las pruebas locales no acceden a bases reales.
 
 ### Coherencia del Dashboard y presentación del registro
 
@@ -124,17 +104,11 @@ npm run dev
 npm run lint
 npm run build
 npm test
-npm run appwrite:setup
-npm run appwrite:migrate-ledger
+npm run db:generate
+# Solo tras validar la conexión al destino MIDAS:
+npm run db:migrate
 ```
 
-## Despliegue en Appwrite Sites
+## Publicación segura
 
-En Appwrite, abre **Sites → Create site → Connect Git repository**, selecciona este repositorio y usa:
-
-- Framework: Next.js
-- Install Command: `npm install`
-- Build Command: `npm run build`
-- Output: `.next`
-
-Agrega las cuatro variables de `.env.example`. Appwrite Sites soporta Next.js SSR directamente.
+No fusionar esta migración mientras `main` siga publicando exclusivamente en Appwrite. Primero verificar el proyecto Vercel MIDAS, sus variables, la base vacía migrada y el acceso con correo verificado. La versión Appwrite permanece disponible como referencia y no se elimina. TERRAN y Pomoboxing no requieren ningún cambio.

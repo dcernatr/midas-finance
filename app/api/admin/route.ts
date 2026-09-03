@@ -1,8 +1,9 @@
-import type { TablesDB } from "node-appwrite";
+import { rejectForeignOrigin } from "../../../lib/request-origin";
+import type { MidasTables } from "../../../lib/postgres/server";
 import { authErrorResponse, newLogId, requireAdmin } from "../../../lib/auth";
 import {
-  APPWRITE_TABLES, Query, createRow, findRow, listRows, updateRow, upsertRow,
-} from "../../../lib/appwrite/server";
+  TABLES, Query, createRow, findRow, listRows, updateRow, upsertRow,
+} from "../../../lib/postgres/server";
 import { mapActivity, mapSetting, mapSource, mapSyncLog, mapUser } from "../../../lib/midas-data";
 
 const DEFAULT_SETTINGS = [
@@ -10,25 +11,25 @@ const DEFAULT_SETTINGS = [
   { key: "spreadsheet_enabled", value: "true" },
 ] as const;
 
-async function ensureSettings(tables: TablesDB, adminId: string) {
+async function ensureSettings(tables: MidasTables, adminId: string) {
   for (const setting of DEFAULT_SETTINGS) {
-    const existing = await findRow(tables, APPWRITE_TABLES.settings, [Query.equal("setting_key", setting.key)]);
+    const existing = await findRow(tables, TABLES.settings, [Query.equal("setting_key", setting.key)]);
     if (!existing) {
-      await createRow(tables, APPWRITE_TABLES.settings, setting.key, {
+      await createRow(tables, TABLES.settings, setting.key, {
         setting_key: setting.key, value: setting.value, updated_by: adminId, updated_at: new Date().toISOString(),
       });
     }
   }
 }
 
-async function readAdminState(tables: TablesDB, adminId: string) {
+async function readAdminState(tables: MidasTables, adminId: string) {
   await ensureSettings(tables, adminId);
   const [users, sources, syncs, logs, settings] = await Promise.all([
-    listRows(tables, APPWRITE_TABLES.users, [Query.orderDesc("$createdAt")]),
-    listRows(tables, APPWRITE_TABLES.sources, [Query.orderDesc("$updatedAt")]),
-    listRows(tables, APPWRITE_TABLES.syncLogs, [Query.orderDesc("$createdAt")], 50),
-    listRows(tables, APPWRITE_TABLES.activity, [Query.orderDesc("$createdAt")], 100),
-    listRows(tables, APPWRITE_TABLES.settings),
+    listRows(tables, TABLES.users, [Query.orderDesc("$createdAt")]),
+    listRows(tables, TABLES.sources, [Query.orderDesc("$updatedAt")]),
+    listRows(tables, TABLES.syncLogs, [Query.orderDesc("$createdAt")], 50),
+    listRows(tables, TABLES.activity, [Query.orderDesc("$createdAt")], 100),
+    listRows(tables, TABLES.settings),
   ]);
   const userRows = users.map(mapUser);
   const sourceRows = sources.map(mapSource);
@@ -72,6 +73,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const rejected = rejectForeignOrigin(request);
+  if (rejected) return rejected;
   try {
     const { user: admin, tables } = await requireAdmin();
     const payload = await request.json() as Record<string, unknown>;
@@ -79,7 +82,7 @@ export async function POST(request: Request) {
 
     if (action === "set_role" || action === "set_status") {
       const targetEmail = String(payload.email ?? "").trim().toLowerCase();
-      const targetRow = await findRow(tables, APPWRITE_TABLES.users, [Query.equal("email", targetEmail)]);
+      const targetRow = await findRow(tables, TABLES.users, [Query.equal("email", targetEmail)]);
       if (!targetRow) return Response.json({ error: "El usuario no existe." }, { status: 404 });
       const target = mapUser(targetRow);
       const nextRole = action === "set_role" ? String(payload.role ?? "") : target.role;
@@ -91,13 +94,13 @@ export async function POST(request: Request) {
         return Response.json({ error: "No puedes retirar o desactivar tu propio acceso ADMIN." }, { status: 400 });
       }
       if (target.role === "admin" && (nextRole !== "admin" || nextStatus !== "active")) {
-        const users = (await listRows(tables, APPWRITE_TABLES.users)).map(mapUser);
+        const users = (await listRows(tables, TABLES.users)).map(mapUser);
         if (users.filter(user => user.role === "admin" && user.status === "active").length <= 1) {
           return Response.json({ error: "MIDAS debe conservar al menos un administrador activo." }, { status: 400 });
         }
       }
-      await updateRow(tables, APPWRITE_TABLES.users, target.id, { role: nextRole, status: nextStatus });
-      await createRow(tables, APPWRITE_TABLES.activity, newLogId(), {
+      await updateRow(tables, TABLES.users, target.id, { role: nextRole, status: nextStatus });
+      await createRow(tables, TABLES.activity, newLogId(), {
         user_id: admin.id, target_user_id: target.id,
         action: action === "set_role" ? "user_role_changed" : nextStatus === "active" ? "user_activated" : "user_disabled",
         status: "success",
@@ -109,10 +112,10 @@ export async function POST(request: Request) {
       if (!["maintenance_mode", "spreadsheet_enabled"].includes(key) || !["true", "false"].includes(value)) {
         return Response.json({ error: "Configuración no permitida." }, { status: 400 });
       }
-      await upsertRow(tables, APPWRITE_TABLES.settings, key, {
+      await upsertRow(tables, TABLES.settings, key, {
         setting_key: key, value, updated_by: admin.id, updated_at: new Date().toISOString(),
       });
-      await createRow(tables, APPWRITE_TABLES.activity, newLogId(), {
+      await createRow(tables, TABLES.activity, newLogId(), {
         user_id: admin.id, action: "system_setting_changed", status: "success", metadata: JSON.stringify({ key, value }),
       });
     } else {

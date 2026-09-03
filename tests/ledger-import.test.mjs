@@ -105,7 +105,7 @@ test("manual and imported entries remain together and export generated codes and
   const state = await readFile(new URL("../app/api/state/route.ts", import.meta.url), "utf8");
   const sync = await readFile(new URL("../app/api/spreadsheet/route.ts", import.meta.url), "utf8");
   const ui = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(state, /listAllRows\(tables, APPWRITE_TABLES.transactions/);
+  assert.match(state, /listAllRows\(tables, TABLES.transactions/);
   assert.match(sync, /sourceScope\(source.sourceUrl\)/);
   assert.match(sync, /Query.equal\("source_type", "spreadsheet"\)/);
   assert.doesNotMatch(sync, /deleteRow/);
