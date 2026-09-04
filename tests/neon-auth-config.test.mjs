@@ -7,6 +7,8 @@ import { registerHooks } from "node:module";
 registerHooks({ resolve(specifier, context, next) {
   if (specifier === "next/headers" || specifier === "next/server")
     return next(specifier + ".js", context);
+  if (context.parentURL?.endsWith(".ts") && specifier.startsWith(".") && !/\.[a-z]+$/i.test(specifier))
+    return next(specifier + ".ts", context);
   return next(specifier, context);
 } });
 
