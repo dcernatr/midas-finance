@@ -12,7 +12,7 @@ registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.endsWith(".ts") && specifier.startsWith(".") && !/\.[a-z]+$/i.test(specifier)) return next(specifier + ".ts", context);
   return next(specifier, context);
 }, load(url, context, next) {
-  if (url === "midas-auth-test:session") return { format: "module", shortCircuit: true, source: "export const getAuth = () => ({ getSession: async () => globalThis.__midasSession });" };
+  if (url === "midas-auth-test:session") return { format: "module", shortCircuit: true, source: "export const getAuth = () => ({ getSession: async (options) => { globalThis.__midasSessionOptions = options; return globalThis.__midasSession; } });" };
   if (url === "midas-auth-test:pool") return { format: "module", shortCircuit: true, source: "export const getPool = () => globalThis.__midasPool;" };
   return next(url, context);
 } });
@@ -28,6 +28,7 @@ test("Neon session validation, explicit verified admin and disabled/maintenance 
     else process.env.MIDAS_ADMIN_EMAIL = oldAdmin;
     delete globalThis.__midasPool;
     delete globalThis.__midasSession;
+    delete globalThis.__midasSessionOptions;
     await db.close();
   });
   for (const file of (await readdir(new URL("../drizzle-neon/", import.meta.url))).filter(f => f.endsWith(".sql")).sort())
@@ -38,6 +39,7 @@ test("Neon session validation, explicit verified admin and disabled/maintenance 
 
   globalThis.__midasSession = { data: null, error: null };
   await assert.rejects(ensureContext, e => e.status === 401);
+  assert.deepEqual(globalThis.__midasSessionOptions, { query: { disableCookieCache: "true" } }, "protected requests must validate the live session, not cookie-cached identity");
   globalThis.__midasSession = { data: null, error: { message: "upstream unavailable" } };
   await assert.rejects(ensureContext, e => e.status === 503);
   session("unverified", "owner@example.test", false);

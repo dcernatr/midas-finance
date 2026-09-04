@@ -11,7 +11,7 @@ export class AuthError extends Error {
 export function newLogId() { return "act_" + crypto.randomUUID().replaceAll("-", ""); }
 
 export async function ensureContext(options: { logAccess?: boolean } = {}) {
-  const { data: session, error } = await getAuth().getSession();
+  const { data: session, error } = await getAuth().getSession({ query: { disableCookieCache: "true" } });
   if (error) throw new AuthError("No se pudo verificar tu sesión. Vuelve a intentar.", 503);
   const identity = session?.user;
   if (!identity) throw new AuthError("Debes iniciar sesión para usar MIDAS.", 401);
