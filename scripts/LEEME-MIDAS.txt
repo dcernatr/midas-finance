@@ -1,0 +1,33 @@
+CONFIGURAR MIDAS EN WINDOWS
+
+1. Extrae todos los archivos del ZIP a una carpeta.
+2. Abre INICIAR-MIDAS.cmd con doble clic.
+3. Escribe SI. Si se solicita, autoriza Vercel y Neon en el navegador.
+4. Escribe el correo que usaras y verificaras como administrador de MIDAS.
+5. Espera el resumen CONFIGURACION GUARDADA y envialo al chat.
+
+Requisito: Node.js LTS 22 o superior, incluyendo npm: https://nodejs.org
+No requiere permisos de administrador de Windows ni cambiar ExecutionPolicy.
+No ejecutes el archivo dentro del ZIP sin extraer los otros archivos.
+Si una politica de tu equipo impide ejecutarlo, no desactives la proteccion.
+
+El script descarga en la cache de npm dos herramientas oficiales fijadas:
+Vercel 59.11.2 y Neon 4.14.0. Sus inicios de sesion son los normales de cada CLI;
+las sesiones pueden permanecer guardadas por esas herramientas en tu equipo.
+El script no lee ni extrae sus archivos internos de credenciales.
+
+Solo crea variables ausentes para Production en dct4/midas-finance:
+DATABASE_URL, NEON_AUTH_BASE_URL, NEON_AUTH_COOKIE_SECRET, MIDAS_ADMIN_EMAIL.
+Todas se guardan como Sensitive. Las existentes se conservan sin validarlas.
+Las contrasenas no aparecen en pantalla, archivos .env ni argumentos de procesos.
+Si falla a mitad, conserva lo ya guardado y permite repetir sin sobrescribirlo.
+
+NO PUBLICA, NO FUSIONA GITHUB, NO EJECUTA SQL y NO MIGRA HISTORIAL.
+No toca Appwrite, TERRAN ni Pomoboxing. No crea otros proyectos.
+No configura Preview ni Development con credenciales de produccion.
+La conexion directa DATABASE_URL_UNPOOLED se necesitara al ejecutar la
+migracion validada; no se guarda en el runtime de Vercel por este script.
+
+Despues falta validar la migracion y el acceso en un entorno aislado,
+autorizar el dominio en Neon Auth y coordinar la publicacion.
+El resumen de variables presentes no prueba que la aplicacion funcione.
