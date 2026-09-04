@@ -7,6 +7,7 @@ import { MidasCatIcon } from "@/components/midas-cat-icon";
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -53,8 +54,9 @@ export default function LoginPage() {
           <button className={mode === "signup" ? "active" : ""} onClick={() => setMode("signup")}>Crear cuenta</button>
         </div>
         <form onSubmit={submit}>
-          <label><span>Correo</span><div><Mail /><input type="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} /></div></label>
-          <label><span>Contraseña</span><div><LockKeyhole /><input type="password" autoComplete={mode === "signin" ? "current-password" : "new-password"} minLength={8} required value={password} onChange={event => setPassword(event.target.value)} /></div></label>
+          <label className="login-field" htmlFor="midas-email"><span>Correo</span><div><Mail aria-hidden="true" /><input id="midas-email" type="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} /></div></label>
+          <label className="login-field" htmlFor="midas-password"><span>Contraseña</span><div><LockKeyhole aria-hidden="true" /><input id="midas-password" type={showPassword ? "text" : "password"} autoComplete={mode === "signin" ? "current-password" : "new-password"} minLength={8} required value={password} onChange={event => setPassword(event.target.value)} /></div></label>
+          <label className="login-password-toggle"><input type="checkbox" checked={showPassword} onChange={event => setShowPassword(event.target.checked)} aria-controls="midas-password" />Mostrar contraseña</label>
           {message && <p className="login-message">{message}</p>}
           <button className="gold-button login-submit" disabled={loading}>{loading ? "Procesando…" : mode === "signin" ? "Ingresar" : "Crear cuenta"}</button>
         </form>

@@ -844,10 +844,16 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible, [role=
 .login-tabs button { min-height: 42px; padding: 10px; border: 0; border-radius: 8px; color: var(--muted-text); background: transparent; cursor: pointer; }
 .login-tabs button.active { color: var(--text); background: var(--panel); box-shadow: 0 2px 8px rgba(0,0,0,.18); }
 .login-card form { display: grid; gap: 16px; }
-.login-card label { display: grid; gap: 7px; color: var(--muted-text); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-.login-card label > div { display: flex; align-items: center; gap: 10px; padding: 0 13px; border: 1px solid var(--line); border-radius: 10px; background: rgba(127,137,147,.055); }
-.login-card label svg { width: 17px; color: var(--gold); }
-.login-card input { width: 100%; height: 45px; border: 0; outline: 0; color: var(--text); background: transparent; }
+.login-card .login-field { display: grid; gap: 7px; min-width: 0; color: var(--muted-text); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.login-card .login-field > div { display: flex; align-items: center; gap: 12px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-solid); }
+.login-card .login-field > div:focus-within { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(203,166,91,.18); }
+.login-card .login-field svg { width: 18px; height: 18px; flex: none; color: var(--gold); }
+.login-card .login-field input { width: 100%; min-width: 0; height: 46px; padding: 10px 8px; border: 0; border-radius: 7px; outline: 0; color: var(--text); background: transparent; font: inherit; font-size: 16px; font-weight: 400; letter-spacing: normal; text-transform: none; caret-color: var(--text); }
+.login-card .login-field input:autofill { box-shadow: 0 0 0 1000px var(--panel-solid) inset; }
+.login-card .login-field input:-webkit-autofill { -webkit-text-fill-color: var(--text); -webkit-box-shadow: 0 0 0 1000px var(--panel-solid) inset; caret-color: var(--text); }
+.login-card .login-password-toggle { display: flex; align-items: center; gap: 9px; min-height: 32px; margin-top: -4px; color: var(--muted-text); font-size: 13px; font-weight: 400; letter-spacing: normal; text-transform: none; cursor: pointer; }
+.login-password-toggle input { width: 16px; height: 16px; flex: none; margin: 0; accent-color: var(--gold); cursor: pointer; }
+.login-password-toggle input:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
 .login-submit { width: 100%; min-height: 46px; border: 0; border-radius: 10px; cursor: pointer; }
 .login-message { margin: 0; padding: 11px 12px; border-radius: 8px; color: var(--warning); background: rgba(240,169,77,.1); font-size: 13px; line-height: 1.45; }
 .login-security { display: flex; align-items: flex-start; gap: 9px; margin-top: 22px; color: var(--muted-text); font-size: 12px; line-height: 1.5; }
