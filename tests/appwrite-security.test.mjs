@@ -22,7 +22,7 @@ test("defines nine isolated base tables plus a private MIDAS code sequence", asy
 
 test("keeps Neon database credentials server-only and delegates cookies to Neon Auth", async () => {
   const files = [
-    "../lib/postgres/pool.ts", "../lib/neon-auth.ts", "../lib/auth.ts", "../app/api/auth/session/route.ts",
+    "../lib/postgres/pool.ts", "../lib/neon-auth.ts", "../lib/auth-diagnostics.ts", "../lib/auth.ts", "../app/api/auth/session/route.ts",
     "../app/api/state/route.ts", "../app/api/admin/route.ts", "../app/api/spreadsheet/route.ts",
   ];
   const source = (await Promise.all(files.map(file => readFile(new URL(file, import.meta.url), "utf8")))).join("\n");
