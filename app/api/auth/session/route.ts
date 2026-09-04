@@ -1,41 +1,28 @@
-import { ID } from "node-appwrite";
-import { cookies } from "next/headers";
-import { appwriteSessionCookieName, createAdminServices } from "../../../../lib/appwrite/server";
+import { getAuth } from "../../../../lib/neon-auth";
+import { rejectForeignOrigin } from "../../../../lib/request-origin";
 
 export async function POST(request: Request) {
+  const rejected = rejectForeignOrigin(request);
+  if (rejected) return rejected;
   try {
     const payload = await request.json() as Record<string, unknown>;
     const email = String(payload.email ?? "").trim().toLowerCase();
     const password = String(payload.password ?? "");
     const mode = String(payload.mode ?? "signin");
-    if (!email || password.length < 8) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || password.length < 8 || password.length > 256 || !["signin","signup"].includes(mode))
       return Response.json({ error: "Ingresa un correo válido y una contraseña de al menos 8 caracteres." }, { status: 400 });
-    }
-
-    const { account } = createAdminServices();
+    const auth = getAuth();
+    const result = mode === "signup"
+      ? await auth.signUp.email({ email, password, name: email.split("@")[0] })
+      : await auth.signIn.email({ email, password });
+    if (result.error) return Response.json({ error: "No se pudo completar el acceso. Revisa los datos y la verificación de tu correo." }, { status: 400 });
     if (mode === "signup") {
-      await account.create({
-        userId: ID.unique(),
-        email,
-        password,
-        name: email.split("@")[0],
-      });
-    } else if (mode !== "signin") {
-      return Response.json({ error: "Acción de acceso inválida." }, { status: 400 });
+      const verification = await auth.sendVerificationEmail({ email, callbackURL: new URL("/login", request.url).href });
+      return Response.json({ success: true, needsVerification: true,
+        message: verification.error ? "Cuenta creada. No se pudo enviar la verificación; vuelve a intentarlo desde el botón Reenviar verificación." : "Cuenta creada. Revisa tu correo y verifica tu cuenta antes de ingresar." });
     }
-
-    const session = await account.createEmailPasswordSession({ email, password });
-    const cookieStore = await cookies();
-    cookieStore.set(appwriteSessionCookieName(), session.secret, {
-      path: "/",
-      httpOnly: true,
-      sameSite: "strict",
-      secure: process.env.NODE_ENV === "production",
-      expires: new Date(session.expire),
-    });
     return Response.json({ success: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "No se pudo completar el acceso.";
-    return Response.json({ error: message }, { status: 400 });
+  } catch {
+    return Response.json({ error: "No se pudo completar el acceso. Comprueba la conexión e inténtalo nuevamente." }, { status: 503 });
   }
 }

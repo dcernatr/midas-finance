@@ -20,19 +20,21 @@ test("defines nine isolated base tables plus a private MIDAS code sequence", asy
   assert.match(migration, /permissions: \[\], rowSecurity: false/);
 });
 
-test("keeps the Appwrite key server-only", async () => {
+test("keeps Neon database credentials server-only and delegates cookies to Neon Auth", async () => {
   const files = [
-    "../lib/appwrite/server.ts", "../lib/auth.ts", "../app/api/auth/session/route.ts",
+    "../lib/postgres/pool.ts", "../lib/neon-auth.ts", "../lib/auth.ts", "../app/api/auth/session/route.ts",
     "../app/api/state/route.ts", "../app/api/admin/route.ts", "../app/api/spreadsheet/route.ts",
   ];
   const source = (await Promise.all(files.map(file => readFile(new URL(file, import.meta.url), "utf8")))).join("\n");
-  assert.match(source, /process\.env\.APPWRITE_API_KEY/);
-  assert.doesNotMatch(source, /NEXT_PUBLIC_APPWRITE_API_KEY/);
-  assert.match(source, /httpOnly: true/);
-  assert.match(source, /sameSite: "strict"/);
+  assert.match(source, /process\.env\.DATABASE_URL/);
+  assert.doesNotMatch(source, /NEXT_PUBLIC_DATABASE_URL|APPWRITE_API_KEY/);
+  assert.match(source, /createNeonAuth/);
+  assert.match(source, /NEON_AUTH_COOKIE_SECRET/);
+  assert.match(source, /identity\.emailVerified/);
+  assert.match(source, /MIDAS_ADMIN_EMAIL/);
 });
 
-test("scopes financial operations to the authenticated Appwrite user", async () => {
+test("scopes financial operations to the authenticated user", async () => {
   const state = await readFile(new URL("../app/api/state/route.ts", import.meta.url), "utf8");
   const spreadsheet = await readFile(new URL("../app/api/spreadsheet/route.ts", import.meta.url), "utf8");
   assert.match(state, /Query\.equal\("user_id", user\.id\)/);
@@ -42,10 +44,12 @@ test("scopes financial operations to the authenticated Appwrite user", async () 
   assert.match(state, /rollback: true/);
 });
 
-test("contains no runtime dependency on Supabase or direct PostgreSQL", async () => {
+test("uses PostgreSQL and Neon Auth without Supabase", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   const dependencies = { ...packageJson.dependencies, ...packageJson.devDependencies };
-  for (const name of ["@supabase/ssr", "@supabase/supabase-js", "supabase", "drizzle-orm", "drizzle-kit", "postgres"]) {
+  for (const name of ["@supabase/ssr", "@supabase/supabase-js", "supabase"]) {
     assert.equal(dependencies[name], undefined);
   }
+  for (const name of ["drizzle-orm", "drizzle-kit", "pg", "@neondatabase/auth"]) assert.ok(dependencies[name]);
+  assert.equal(packageJson.scripts.prebuild, undefined, "build must never mutate Appwrite or Neon");
 });

@@ -19,7 +19,7 @@ registerHooks({ resolve(specifier, context, next) {
   return next(url, context);
 } });
 const { withMovementCode, ensureMovementCodes } = await import("../lib/ledger-store.ts");
-const { APPWRITE_TABLES: T } = await import("../lib/appwrite/server.ts");
+const { TABLES: T } = await import("../lib/postgres/server.ts");
 const conflict = () => Object.assign(new Error("Conflict"), { code: 409 });
 
 // Optimistic transactions: the increment and row changes become visible only on

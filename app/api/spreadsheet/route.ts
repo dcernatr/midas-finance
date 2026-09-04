@@ -1,7 +1,8 @@
+import { rejectForeignOrigin } from "../../../lib/request-origin";
 import { authErrorResponse, ensureContext, newLogId } from "../../../lib/auth";
 import {
-  APPWRITE_DATABASE_ID, APPWRITE_TABLES, Query, createRow, findRow, listRows, listAllRows, updateRow,
-} from "../../../lib/appwrite/server";
+  DATABASE_ID, TABLES, Query, createRow, findRow, listRows, listAllRows, updateRow,
+} from "../../../lib/postgres/server";
 import { mapCategory, mapSource, mapSyncLog } from "../../../lib/midas-data";
 import {
   fetchSpreadsheet, rowObject, suggestMapping, sheetHeaders, validateMapping, parseMappedRow,
@@ -25,8 +26,8 @@ export async function GET() {
   try {
     const { user, tables } = await ensureContext();
     const [sources, logs] = await Promise.all([
-      listRows(tables, APPWRITE_TABLES.sources, [Query.equal("user_id", user.id)], 1),
-      listRows(tables, APPWRITE_TABLES.syncLogs, [Query.equal("user_id", user.id), Query.orderDesc("$createdAt")], 5),
+      listRows(tables, TABLES.sources, [Query.equal("user_id", user.id)], 1),
+      listRows(tables, TABLES.syncLogs, [Query.equal("user_id", user.id), Query.orderDesc("$createdAt")], 5),
     ]);
     return Response.json({ source: sources[0] ? mapSource(sources[0]) : null, logs: logs.map(mapSyncLog) });
   } catch (error) {
@@ -35,13 +36,15 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const rejected = rejectForeignOrigin(request);
+  if (rejected) return rejected;
   const requestStarted = Date.now();
   try {
     const { user, tables } = await ensureContext();
     const payload = await request.json() as Record<string, unknown>;
     const action = String(payload.action ?? "");
 
-    const feature = await findRow(tables, APPWRITE_TABLES.settings, [Query.equal("setting_key", "spreadsheet_enabled")]);
+    const feature = await findRow(tables, TABLES.settings, [Query.equal("setting_key", "spreadsheet_enabled")]);
     if (feature?.value === "false") return Response.json({ error: "La integración Spreadsheet está desactivada por ADMIN." }, { status: 503 });
 
     if (action === "list_sheets") {
@@ -75,7 +78,7 @@ export async function POST(request: Request) {
       let mapping;
       try { mapping = validateMapping(payload.mapping, headers); }
       catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Mapeo inválido." }, { status: 400 }); }
-      const existing = await findRow(tables, APPWRITE_TABLES.sources, [Query.equal("user_id", user.id)]);
+      const existing = await findRow(tables, TABLES.sources, [Query.equal("user_id", user.id)]);
       const name = `${sourceLabel(rawUrl)} · ${sheetName}`.slice(0, 128);
       const now = new Date().toISOString();
       const sourceData = {
@@ -83,11 +86,11 @@ export async function POST(request: Request) {
         last_sync_status: "configured", updated_at: now,
       };
       const saved = existing
-        ? await updateRow(tables, APPWRITE_TABLES.sources, existing.$id, sourceData)
-        : await createRow(tables, APPWRITE_TABLES.sources, id("src"), {
+        ? await updateRow(tables, TABLES.sources, existing.$id, sourceData)
+        : await createRow(tables, TABLES.sources, id("src"), {
           ...sourceData, last_rows_detected: 0, last_rows_inserted: 0, last_rows_ignored: 0, last_rows_failed: 0,
         });
-      await createRow(tables, APPWRITE_TABLES.activity, newLogId(), {
+      await createRow(tables, TABLES.activity, newLogId(), {
         user_id: user.id, target_user_id: user.id,
         action: existing ? "spreadsheet_source_changed" : "spreadsheet_configured",
         status: "success", metadata: JSON.stringify({ sourceName: name, sheetName }),
@@ -96,7 +99,7 @@ export async function POST(request: Request) {
     }
 
     if (action === "sync") {
-      const sourceRow = await findRow(tables, APPWRITE_TABLES.sources, [Query.equal("user_id", user.id)]);
+      const sourceRow = await findRow(tables, TABLES.sources, [Query.equal("user_id", user.id)]);
       if (!sourceRow) return Response.json({ error: "Configura primero una fuente Spreadsheet." }, { status: 400 });
       const source = mapSource(sourceRow);
       const result = await fetchSpreadsheet(source.sourceUrl);
@@ -111,8 +114,8 @@ export async function POST(request: Request) {
       const startedAt = String(run.row.sync_started_at);
 
       const [rawCategories, existingRows] = await Promise.all([
-        listRows(tables, APPWRITE_TABLES.categories, [Query.equal("user_id", user.id)]),
-        listAllRows(tables, APPWRITE_TABLES.transactions, [Query.equal("user_id", user.id), Query.equal("source_type", "spreadsheet")]),
+        listRows(tables, TABLES.categories, [Query.equal("user_id", user.id)]),
+        listAllRows(tables, TABLES.transactions, [Query.equal("user_id", user.id), Query.equal("source_type", "spreadsheet")]),
       ]);
       const categoryRows = rawCategories.map(mapCategory);
       const categoryMap = new Map(categoryRows.map(category => [normalizedText(category.name), category.id]));
@@ -157,7 +160,7 @@ export async function POST(request: Request) {
           if (existingIds.has(identity.sourceId)) { if (insertedInThisRun.has(identity.sourceId)) inserted++; else ignored++; continue; }
           const prior = legacy.get(fingerprint)?.shift();
           if (prior) {
-            await updateRow(tables, APPWRITE_TABLES.transactions, prior.$id, { source_id: identity.sourceId });
+            await updateRow(tables, TABLES.transactions, prior.$id, { source_id: identity.sourceId });
             existingIds.add(identity.sourceId);
             ignored++;
             continue;
@@ -165,12 +168,12 @@ export async function POST(request: Request) {
           const categoryName = normalizedText(movement.category);
           if (!categoryMap.has(categoryName)) {
             const categoryId = `cat_${digest(user.id + ":" + categoryName)}`;
-            try { await createRow(tables, APPWRITE_TABLES.categories, categoryId, { user_id: user.id, name: movement.category, group_name: "Importadas", budget: 0, color: "#8490A3", kind: "variable", archived: false }); }
+            try { await createRow(tables, TABLES.categories, categoryId, { user_id: user.id, name: movement.category, group_name: "Importadas", budget: 0, color: "#8490A3", kind: "variable", archived: false }); }
             catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === 409)) throw error; }
             categoryMap.set(categoryName, categoryId);
           }
           try {
-            await withMovementCode(tables, user.id, movement.date, movement.type, (code, transactionId) => createRow(tables, APPWRITE_TABLES.transactions, identity.rowId, {
+            await withMovementCode(tables, user.id, movement.date, movement.type, (code, transactionId) => createRow(tables, TABLES.transactions, identity.rowId, {
               user_id: user.id, date: movement.date, description: movement.description, amount: movement.amount,
               category_id: categoryMap.get(categoryName), source_category: movement.category, category_override: false, type: movement.type, account: "Spreadsheet", midas_code: code,
               source_type: "spreadsheet", source_id: identity.sourceId, source_name: source.sourceName, source_imported_at: startedAt,
@@ -178,7 +181,7 @@ export async function POST(request: Request) {
             inserted++;
           } catch (error) {
             if (!(error && typeof error === "object" && "code" in error && error.code === 409)) throw error;
-            const concurrent = await tables.getRow({ databaseId: APPWRITE_DATABASE_ID, tableId: APPWRITE_TABLES.transactions, rowId: identity.rowId });
+            const concurrent = await tables.getRow({ databaseId: DATABASE_ID, tableId: TABLES.transactions, rowId: identity.rowId });
             if (concurrent.user_id !== user.id || concurrent.source_id !== identity.sourceId) throw error;
             if (concurrent.source_imported_at === startedAt) inserted++; else ignored++;
           }
