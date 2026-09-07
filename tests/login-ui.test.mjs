@@ -10,6 +10,9 @@ test("password visibility is opt-in, controlled, and linked to the password fiel
   assert.match(page, /Mostrar contraseña/);
   assert.match(page, /htmlFor="midas-email"/);
   assert.match(page, /htmlFor="midas-password"/);
+  assert.match(page, /mode === "signin" &&/);
+  assert.match(page, /Enviar enlace para crear cuenta/);
+  assert.match(page, /Enviar enlace de acceso/);
 });
 
 test("login field spacing and autofill styling do not apply full-width styles to the checkbox", async () => {

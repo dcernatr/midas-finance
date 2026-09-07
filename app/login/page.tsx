@@ -55,12 +55,14 @@ export default function LoginPage() {
         </div>
         <form onSubmit={submit}>
           <label className="login-field" htmlFor="midas-email"><span>Correo</span><div><Mail aria-hidden="true" /><input id="midas-email" type="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} /></div></label>
-          <label className="login-field" htmlFor="midas-password"><span>Contraseña</span><div><LockKeyhole aria-hidden="true" /><input id="midas-password" type={showPassword ? "text" : "password"} autoComplete={mode === "signin" ? "current-password" : "new-password"} minLength={8} required value={password} onChange={event => setPassword(event.target.value)} /></div></label>
-          <label className="login-password-toggle"><input type="checkbox" checked={showPassword} onChange={event => setShowPassword(event.target.checked)} aria-controls="midas-password" />Mostrar contraseña</label>
+          {mode === "signin" && <>
+            <label className="login-field" htmlFor="midas-password"><span>Contraseña</span><div><LockKeyhole aria-hidden="true" /><input id="midas-password" type={showPassword ? "text" : "password"} autoComplete="current-password" minLength={8} required value={password} onChange={event => setPassword(event.target.value)} /></div></label>
+            <label className="login-password-toggle"><input type="checkbox" checked={showPassword} onChange={event => setShowPassword(event.target.checked)} aria-controls="midas-password" />Mostrar contraseña</label>
+          </>}
           {message && <p className="login-message">{message}</p>}
-          <button className="gold-button login-submit" disabled={loading}>{loading ? "Procesando…" : mode === "signin" ? "Ingresar" : "Crear cuenta"}</button>
+          <button className="gold-button login-submit" disabled={loading}>{loading ? "Procesando…" : mode === "signin" ? "Ingresar" : "Enviar enlace para crear cuenta"}</button>
         </form>
-        <button className="text-button" type="button" disabled={loading || !email} onClick={resendVerification}>Reenviar verificación</button>
+        <button className="text-button" type="button" disabled={loading || !email} onClick={resendVerification}>Enviar enlace de acceso</button>
         <div className="login-security"><ShieldCheck /><span>Autenticación con Neon Auth. MIDAS no guarda contraseñas en sus tablas financieras.</span></div>
       </section>
     </main>

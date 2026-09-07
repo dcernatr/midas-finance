@@ -51,7 +51,7 @@ test("auth diagnostics never expose provider credentials, email or raw errors", 
   assert.ok(!logs.join("").includes(sensitive));
 });
 
-test("registration reports configuration failures and preserves success when verification fails", async t => {
+test("registration reports configuration failures and sends a magic link", async t => {
   const oldLog = console.error;
   console.error = () => {};
   t.after(() => { console.error = oldLog; delete globalThis.__authRouteMock; });
@@ -65,22 +65,21 @@ test("registration reports configuration failures and preserves success when ver
   assert.equal(missing.status, 503);
   assert.equal((await missing.json()).code, "AUTH_SECRET_MISSING");
   globalThis.__authRouteMock = () => ({
-    signUp: { email: async () => ({ data: {}, error: null }) },
-    sendVerificationEmail: async () => { throw new Error("upstream error"); },
+    signIn: { magicLink: async () => ({ data: {}, error: null }) },
   });
   const created = await POST(request("signup"));
   assert.equal(created.status, 200);
   const body = await created.json();
   assert.equal(body.success, true);
   assert.equal(body.needsVerification, true);
-  assert.match(body.message, /^Cuenta creada/);
+  assert.match(body.message, /^Enlace enviado/);
 });
 
-test("resend verification does not falsely report success on provider failure", async t => {
+test("magic-link resend does not falsely report success on provider failure", async t => {
   const oldLog = console.error;
   console.error = () => {};
   t.after(() => { console.error = oldLog; delete globalThis.__authRouteMock; });
-  globalThis.__authRouteMock = () => ({ sendVerificationEmail: async () => ({ error: { status: 502 } }) });
+  globalThis.__authRouteMock = () => ({ signIn: { magicLink: async () => ({ error: { status: 502 } }) } });
   const { POST } = await import("../app/api/auth/verify/route.ts");
   const result = await POST(new Request("https://midas.example.test/api/auth/verify", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "user@example.test" }),
