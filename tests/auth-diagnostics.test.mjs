@@ -51,7 +51,7 @@ test("auth diagnostics never expose provider credentials, email or raw errors", 
   assert.ok(!logs.join("").includes(sensitive));
 });
 
-test("registration reports configuration failures and sends a magic link", async t => {
+test("registration and magic-link access report configuration failures and send magic links", async t => {
   const oldLog = console.error;
   console.error = () => {};
   t.after(() => { console.error = oldLog; delete globalThis.__authRouteMock; });
@@ -73,6 +73,11 @@ test("registration reports configuration failures and sends a magic link", async
   assert.equal(body.success, true);
   assert.equal(body.needsVerification, true);
   assert.match(body.message, /^Enlace enviado/);
+  const access = await POST(request("magiclink"));
+  assert.equal(access.status, 200);
+  const accessBody = await access.json();
+  assert.equal(accessBody.needsVerification, true);
+  assert.equal(accessBody.message, "Enlace enviado. Ábrelo desde tu correo para verificar tu cuenta y entrar a MIDAS.");
 });
 
 test("magic-link resend does not falsely report success on provider failure", async t => {

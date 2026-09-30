@@ -11,18 +11,20 @@ export async function POST(request: Request) {
     if (!payload || typeof payload !== "object") return Response.json({ error: "Solicitud de acceso no válida." }, { status: 400 });
     const email = String(payload.email ?? "").trim().toLowerCase();
     const password = String(payload.password ?? "");
-    const mode = String(payload.mode ?? "signin");
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !["signin","signup"].includes(mode))
+    const mode = String(payload.mode ?? "magiclink");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !["signin","signup","magiclink"].includes(mode))
       return Response.json({ error: "Ingresa un correo válido." }, { status: 400 });
     if (mode === "signin" && (password.length < 8 || password.length > 256))
       return Response.json({ error: "Ingresa una contraseña de al menos 8 caracteres." }, { status: 400 });
     const auth = getAuth();
     phase = mode === "signup" ? "signup" : "signin";
-    if (mode === "signup") {
+    if (mode === "signup" || mode === "magiclink") {
       const result = await auth.signIn.magicLink({ email, callbackURL: new URL("/", request.url).href });
-      if (result.error) return authFailureResponse(result.error, "signup");
+      if (result.error) return authFailureResponse(result.error, mode === "signup" ? "signup" : "signin");
       return Response.json({ success: true, needsVerification: true,
-        message: "Enlace enviado. Ábrelo desde tu correo para crear la cuenta y entrar a MIDAS." });
+        message: mode === "magiclink"
+          ? "Enlace enviado. Ábrelo desde tu correo para verificar tu cuenta y entrar a MIDAS."
+          : "Enlace enviado. Ábrelo desde tu correo para crear la cuenta y entrar a MIDAS." });
     }
     const result = await auth.signIn.email({ email, password });
     if (result.error) return authFailureResponse(result.error, phase);
